@@ -10,6 +10,9 @@ export default function App() {
   const [worksPage, setWorksPage] = useState(1); // текущая страница (для запроса)
   const [worksHasMore, setWorksHasMore] = useState(false);
   const [worksTotal, setWorksTotal] = useState(0);
+  const [worksSearch, setWorksSearch] = useState(''); // строка поиска (UI)
+  const worksSearchRef = useRef(''); // актуальная применённая строка (для отмены гонок)
+  const searchDebounce = useRef(null);
   const [collapsed, setCollapsed] = useState({}); // { [groupCode]: boolean }
 
   // Persist collapsed state per user
@@ -86,17 +89,18 @@ export default function App() {
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
       closeAddModal();
-      // перезагрузка текущей страницы
-      const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}`;
+      // перезагрузка текущей страницы (учитываем поиск)
+      const qParam = worksSearch ? `&q=${encodeURIComponent(worksSearch)}` : '';
+      const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}${qParam}`;
       const data = await fetchJsonTry([
         `/api/works-rows${params}`,
         `http://localhost:4000/api/works-rows${params}`,
         `http://127.0.0.1:4000/api/works-rows${params}`,
       ]);
       if (Array.isArray(data)) {
-        setWorks(data); setWorksPages(1); setWorksTotal(data.length);
+        setWorks(data); setWorksTotal(data.length);
       } else {
-        setWorks(data.items || []); setWorksPages(data.pages || 1); setWorksTotal(data.total || (data.items?.length || 0));
+        setWorks(data.items || []); setWorksTotal(data.total || (data.items?.length || 0));
       }
     } catch (e) {
       alert('Ошибка сохранения: '+(e.message||e));
@@ -211,7 +215,8 @@ export default function App() {
     (async () => {
       try {
         setWorksLoading(true); setWorksError('');
-        const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}`;
+        const qParam = worksSearch ? `&q=${encodeURIComponent(worksSearch)}` : '';
+        const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}${qParam}`;
         const data = await fetchJsonTry([
           `/api/works-rows${params}`,
           `http://localhost:4000/api/works-rows${params}`,
@@ -230,8 +235,11 @@ export default function App() {
             }
           } else {
             if (!Array.isArray(data)) {
-              setWorks(prev => [...prev, ...(data.items || [])]);
-              setWorksTotal(data.total || prev.length + (data.items?.length||0));
+              setWorks(prev => {
+                // Если в процессе поиска изменилась строка, не мержим старые данные
+                return [...prev, ...(data.items || [])];
+              });
+              setWorksTotal(data.total || 0);
               setWorksHasMore(!!data.hasMore);
             }
           }
@@ -243,7 +251,18 @@ export default function App() {
       }
     })();
     return () => { aborted = true; };
-  }, [active, worksPage]);
+  }, [active, worksPage, worksSearch]);
+
+  // Debounce поиска: при изменении worksSearch сбрасываем страницу и перезагружаем список
+  useEffect(() => {
+    if (active !== 'works') return;
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    searchDebounce.current = setTimeout(() => {
+      worksSearchRef.current = worksSearch;
+      setWorksPage(1); // триггер загрузки
+    }, 400);
+    return () => { if (searchDebounce.current) clearTimeout(searchDebounce.current); };
+  }, [worksSearch, active]);
   const updateMaterial = (index, field, value) => {
     setMaterials((prev) => prev.map((it, i) => (i === index ? { ...it, [field]: value } : it)));
   };
@@ -540,7 +559,27 @@ export default function App() {
             <div className="bg-white rounded-xl shadow-sm overflow-hidden">
               <div className="p-4 border-b border-gray-200 flex justify-between items-center">
                 <h2 className="font-semibold text-lg">Справочник работ</h2>
-                <div className="flex gap-2 items-center">
+                <div className="flex gap-2 items-center flex-wrap">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={worksSearch}
+                      onChange={(e) => setWorksSearch(e.target.value)}
+                      placeholder="Поиск (код / имя)"
+                      className="pl-8 pr-2 py-1 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                      style={{ minWidth: 220 }}
+                    />
+                    <span className="material-symbols-outlined text-gray-400 absolute left-2 top-1/2 -translate-y-1/2 text-base">search</span>
+                    {worksSearch && (
+                      <button
+                        className="absolute right-1 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        onClick={() => setWorksSearch('')}
+                        title="Очистить"
+                      >
+                        <span className="material-symbols-outlined text-sm">close</span>
+                      </button>
+                    )}
+                  </div>
                   <label className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors cursor-pointer">
                     <input type="file" accept=".csv" className="hidden" disabled={uploading} onChange={async (e) => {
                       const f = e.target.files?.[0];
@@ -555,20 +594,17 @@ export default function App() {
                         alert(`Импорт завершен: ${j.imported} строк\nПропущено: ${j.skippedRows || 0}\nРаботы: +${j.insertedWorks} / обновлено ${j.updatedWorks}\nФазы: +${j.insertedPhases} / обновлено ${j.updatedPhases}\nРазделы: +${j.insertedStages} / обновлено ${j.updatedStages}\nПодразделы: +${j.insertedSubstages} / обновлено ${j.updatedSubstages}`);
                         // перезагрузка текущей страницы работ
                         try {
-                          const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}`;
+              const qParam = worksSearch ? `&q=${encodeURIComponent(worksSearch)}` : '';
+              const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}${qParam}`;
                           const data = await fetchJsonTry([
                             `/api/works-rows${params}`,
                             `http://localhost:4000/api/works-rows${params}`,
                             `http://127.0.0.1:4000/api/works-rows${params}`,
                           ]);
                           if (Array.isArray(data)) {
-                            setWorks(data);
-                            setWorksPages(1);
-                            setWorksTotal(data.length);
+                setWorks(data); setWorksTotal(data.length);
                           } else {
-                            setWorks(data.items || []);
-                            setWorksPages(data.pages || 1);
-                            setWorksTotal(data.total || (data.items?.length || 0));
+                setWorks(data.items || []); setWorksTotal(data.total || (data.items?.length || 0));
                           }
                         } catch {}
                       } catch (err) {

@@ -89,6 +89,8 @@ app.get('/api/works-rows', async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limitRaw = parseInt(req.query.limit) || 70;
   const limit = Math.min(70, Math.max(1, limitRaw));
+  const qRaw = (req.query.q || '').toString().trim();
+  const q = qRaw.toLowerCase();
     const [phasesR, stagesR, substagesR, worksR] = await Promise.all([
       pool.query('select * from phases'),
       pool.query('select * from stages'),
@@ -143,17 +145,48 @@ app.get('/api/works-rows', async (req, res) => {
       }
     }
     // Пагинация (простое нарезание по итоговому плоскому списку)
-    const total = out.length;
+    let filtered = out;
+    if (q) {
+      // матч по item: code|name содержит q
+      // матч по group: code|title содержит q
+      const matchItem = (row) => {
+        if (row.type !== 'item') return false;
+        const codeL = (row.code || '').toString().toLowerCase();
+        const nameL = (row.name || '').toString().toLowerCase();
+        return codeL.includes(q) || nameL.includes(q);
+      };
+      const matchGroup = (row) => {
+        if (row.type !== 'group') return false;
+        const codeL = (row.code || '').toString().toLowerCase();
+        const titleL = (row.title || '').toString().toLowerCase();
+        return codeL.includes(q) || titleL.includes(q);
+      };
+      const keepGroups = new Set();
+      const matchedItems = new Set();
+      for (const row of out) {
+        if (matchItem(row)) {
+          matchedItems.add(row.code);
+          (row.parents || []).forEach(p => keepGroups.add(p));
+        } else if (matchGroup(row)) {
+          keepGroups.add(row.code);
+        }
+      }
+      filtered = out.filter(row => {
+        if (row.type === 'group') return keepGroups.has(row.code);
+        return matchItem(row);
+      });
+    }
+    const total = filtered.length;
     const start = (page - 1) * limit;
     const end = start + limit;
-    const items = out.slice(start, end);
+    const items = filtered.slice(start, end);
     const hasMore = end < total;
     // Если клиент явно запросил пагинацию (page/limit) — возвращаем объект
     if (req.query.page || req.query.limit) {
-      return res.json({ items, page, limit, total, hasMore });
+      return res.json({ items, page, limit, total, hasMore, q: qRaw || undefined });
     }
     // Иначе прежнее поведение (весь список)
-    res.json(out);
+    res.json(q ? filtered : out);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
