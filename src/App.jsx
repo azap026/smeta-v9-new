@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useRef } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './components/ui/dialog';
+import React, { useState, useEffect, useRef } from 'react';
+import AddWorkModal from './components/AddWorkModal.tsx';
 import { Label, Input, Button } from './components/ui/form';
 
 export default function App() {
@@ -501,7 +501,7 @@ export default function App() {
                         const r = await fetch('/api/admin/import', { method: 'POST', body: fd });
                         const j = await r.json();
                         if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
-                        alert(`Импорт завершен: ${j.imported} строк`);
+                        alert(`Импорт завершен: ${j.imported} строк\nПропущено: ${j.skippedRows || 0}\nРаботы: +${j.insertedWorks} / обновлено ${j.updatedWorks}\nФазы: +${j.insertedPhases} / обновлено ${j.updatedPhases}\nРазделы: +${j.insertedStages} / обновлено ${j.updatedStages}\nПодразделы: +${j.insertedSubstages} / обновлено ${j.updatedSubstages}`);
                         // перезагрузка текущей страницы работ
                         try {
                           const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}`;
@@ -564,6 +564,26 @@ export default function App() {
                     <span>Проверить данные</span>
                   </button>
                   <button
+                    className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      try {
+                        const r = await fetch('/api/admin/export-works-ref');
+                        if (!r.ok) throw new Error('HTTP '+r.status);
+                        const blob = await r.blob();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'works_ref_export.csv';
+                        document.body.appendChild(a); a.click(); a.remove();
+                        setTimeout(()=> URL.revokeObjectURL(url), 2000);
+                      } catch (err) { alert('Ошибка экспорта: '+(err.message||err)); }
+                    }}
+                  >
+                    <span className="material-symbols-outlined text-sm">download</span>
+                    <span>Экспорт CSV</span>
+                  </button>
+                  <button
                     className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
                     onClick={(e) => { e.preventDefault(); openAddModal(); }}
                   >
@@ -572,76 +592,13 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              <Dialog open={modalOpen} onOpenChange={(v) => v ? setModalOpen(true) : setModalOpen(false)}>
-                <DialogContent className="max-w-3xl">
-                  <DialogHeader>
-                    <DialogTitle>Новая работа</DialogTitle>
-                    <button
-                      className="ml-auto p-1 rounded hover:bg-gray-100"
-                      aria-label="Закрыть"
-                      onClick={() => setModalOpen(false)}
-                    >
-                      <span className="material-symbols-outlined text-gray-500">close</span>
-                    </button>
-                  </DialogHeader>
-                  <div className="p-4 space-y-6 text-sm overflow-auto" ref={modalBoxRef}>
-                      <div>
-                        <div className="text-sm font-medium text-gray-500 mb-2">Размещение</div>
-                        <div className="grid grid-cols-3 gap-4">
-                          <div>
-                            <Label htmlFor="phase_id">phase_id</Label>
-                            <Input id="phase_id" value={modalData.phase_id} onChange={(e)=>setMD('phase_id', e.target.value)} />
-                          </div>
-                          <div>
-                            <Label htmlFor="phase_name">phase_name</Label>
-                            <Input id="phase_name" value={modalData.phase_name} onChange={(e)=>setMD('phase_name', e.target.value)} />
-                          </div>
-                          <div>
-                            <Label htmlFor="stage_id">stage_id</Label>
-                            <Input id="stage_id" value={modalData.stage_id} onChange={(e)=>setMD('stage_id', e.target.value)} />
-                          </div>
-                          <div>
-                            <Label htmlFor="stage_name">stage_name</Label>
-                            <Input id="stage_name" value={modalData.stage_name} onChange={(e)=>setMD('stage_name', e.target.value)} />
-                          </div>
-                          <div>
-                            <Label htmlFor="substage_id">substage_id</Label>
-                            <Input id="substage_id" value={modalData.substage_id} onChange={(e)=>setMD('substage_id', e.target.value)} />
-                          </div>
-                          <div>
-                            <Label htmlFor="substage_name">substage_name</Label>
-                            <Input id="substage_name" value={modalData.substage_name} onChange={(e)=>setMD('substage_name', e.target.value)} />
-                          </div>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-gray-500 mb-2">Детали работы</div>
-                        <div className="grid grid-cols-3 gap-4">
-                          <div>
-                            <Label htmlFor="work_id">work_id</Label>
-                            <Input id="work_id" value={modalData.work_id} onChange={(e)=>setMD('work_id', e.target.value)} />
-                          </div>
-                          <div>
-                            <Label htmlFor="unit">unit</Label>
-                            <Input id="unit" value={modalData.unit} onChange={(e)=>setMD('unit', e.target.value)} />
-                          </div>
-                          <div>
-                            <Label htmlFor="unit_price">unit_price</Label>
-                            <Input id="unit_price" type="number" step="0.01" value={modalData.unit_price} onChange={(e)=>setMD('unit_price', e.target.value)} />
-                          </div>
-                          <div className="col-span-3">
-                            <Label htmlFor="work_name">work_name</Label>
-                            <Input id="work_name" value={modalData.work_name} onChange={(e)=>setMD('work_name', e.target.value)} />
-                          </div>
-                        </div>
-                      </div>
-                  </div>
-                  <DialogFooter align="start">
-                    <Button variant="outline" className="rounded-full px-4" onClick={() => setModalOpen(false)}>Отмена</Button>
-                    <Button className="rounded-full px-4" onClick={submitAddModal}>Сохранить</Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
+              <AddWorkModal
+                open={modalOpen}
+                onOpenChange={(v) => setModalOpen(v)}
+                onSaveSuccess={() => {
+                  setTimeout(() => setActive('works'));
+                }}
+              />
               {worksLoading && (<div className="p-4 text-sm text-gray-500">Загрузка…</div>)}
               {worksError && (
                 <div className="p-4 text-sm text-red-600 flex items-center gap-3">

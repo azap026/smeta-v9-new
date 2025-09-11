@@ -212,9 +212,9 @@ app.post('/api/admin/import', upload.single('file'), async (req, res) => {
     console.log('Import: received file at', tmpPath, 'size=', req.file.size);
     const client = await pool.connect();
     try {
-      const { imported } = await importFromCsv(tmpPath, client);
-      console.log('Import: completed, rows=', imported);
-      res.json({ ok: true, imported });
+  const stats = await importFromCsv(tmpPath, client);
+  console.log('Import: completed, rows=', stats.imported);
+  res.json({ ok: true, ...stats });
     } catch (e) {
       console.error('Import: failed', e.message);
       res.status(500).json({ ok: false, error: e.message });
@@ -276,6 +276,106 @@ app.post('/api/admin/upsert-work-ref', async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   } finally {
     client.release();
+  }
+});
+
+// Check if work_ref exists
+app.get('/api/admin/work-ref/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ ok: false, error: 'id required' });
+  try {
+    const { rows } = await pool.query('select id, name, unit, unit_price from works_ref where id=$1', [id]);
+    if (rows.length) return res.json({ ok: true, exists: true, work: rows[0] });
+    res.json({ ok: true, exists: false });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Create new work_ref strictly (reject duplicate)
+app.post('/api/admin/create-work-ref', async (req, res) => {
+  const {
+    phase_id, phase_name,
+    stage_id, stage_name,
+    substage_id, substage_name,
+    work_id, work_name,
+    unit, unit_price
+  } = req.body || {};
+  if (!work_id || !work_name) return res.status(400).json({ ok: false, error: 'work_id and work_name are required' });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    // Early duplicate check
+    const dup = await client.query('select 1 from works_ref where id=$1', [work_id]);
+    if (dup.rows.length) {
+      await client.query('rollback');
+      return res.status(409).json({ ok: false, duplicate: true, error: 'work_id already exists' });
+    }
+    if (phase_id) {
+      await client.query(
+        'insert into phases(id, name, sort_order) values($1,$2,coalesce($3,0)) on conflict (id) do update set name=excluded.name',
+        [phase_id, phase_name || phase_id, null]
+      );
+    }
+    if (stage_id) {
+      await client.query(
+        'insert into stages(id, name, phase_id) values($1,$2,$3) on conflict (id) do update set name=excluded.name, phase_id=excluded.phase_id',
+        [stage_id, stage_name || stage_id, phase_id || null]
+      );
+    }
+    if (substage_id) {
+      await client.query(
+        'insert into substages(id, name, stage_id) values($1,$2,$3) on conflict (id) do update set name=excluded.name, stage_id=excluded.stage_id',
+        [substage_id, substage_name || substage_id, stage_id || null]
+      );
+    }
+    const priceNum = unit_price == null || unit_price === '' ? null : Number(unit_price);
+    await client.query(
+      `insert into works_ref(id, name, unit, unit_price, phase_id, stage_id, substage_id)
+       values($1,$2,$3,$4,$5,$6,$7)`,
+      [work_id, work_name, unit || null, priceNum, phase_id || null, stage_id || null, substage_id || null]
+    );
+    await client.query('commit');
+    res.status(201).json({ ok: true, created: true });
+  } catch (e) {
+    await client.query('rollback');
+    if (e && e.code === '23505') return res.status(409).json({ ok: false, duplicate: true, error: 'work_id already exists' });
+    res.status(500).json({ ok: false, error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Export works_ref with hierarchy names as CSV
+app.get('/api/admin/export-works-ref', async (req, res) => {
+  try {
+    const q = `select w.id, w.name, w.unit, w.unit_price,
+      w.phase_id, p.name as phase_name,
+      w.stage_id, s.name as stage_name,
+      w.substage_id, ss.name as substage_name
+      from works_ref w
+      left join phases p on p.id = w.phase_id
+      left join stages s on s.id = w.stage_id
+      left join substages ss on ss.id = w.substage_id
+      order by w.id`;
+    const { rows } = await pool.query(q);
+    const headers = ['work_id','work_name','unit','unit_price','phase_id','phase_name','stage_id','stage_name','substage_id','substage_name'];
+    const esc = (v) => {
+      if (v == null) return '';
+      const s = String(v);
+      if (/[";,\n]/.test(s)) return '"'+s.replace(/"/g,'""')+'"';
+      return s;
+    };
+    let csv = headers.join(';') + '\n';
+    for (const r of rows) {
+      csv += [r.id, r.name, r.unit, r.unit_price, r.phase_id, r.phase_name, r.stage_id, r.stage_name, r.substage_id, r.substage_name].map(esc).join(';') + '\n';
+    }
+    res.setHeader('Content-Type','text/csv; charset=utf-8');
+    const date = new Date().toISOString().slice(0,10);
+    res.setHeader('Content-Disposition', `attachment; filename="works_ref_${date}.csv"`);
+    res.send('\uFEFF'+csv); // BOM for Excel UTF-8
+  } catch (e) {
+    res.status(500).json({ ok:false, error: e.message });
   }
 });
 
