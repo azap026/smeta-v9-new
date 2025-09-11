@@ -34,8 +34,8 @@ export default function AddWorkModal({ open, onOpenChange, onSaveSuccess }) {
     });
     setError(null);
     setIdStatus('idle');
-  setMode({ phase:'existing', stage:'existing', sub:'existing' });
-  setShowPhase(false);
+    setMode({ phase:'existing', stage:'existing', sub:'existing' });
+    setShowPhase(false);
     const t = setTimeout(() => { modalBoxRef.current?.querySelector("input")?.focus(); }, 0);
     // загрузка справочников
     (async () => {

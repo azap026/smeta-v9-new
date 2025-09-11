@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AddWorkModal from './components/AddWorkModal.tsx';
 import { Label, Input, Button } from './components/ui/form';
+import FloatingWindow from './components/ui/FloatingWindow.jsx';
 
 export default function App() {
   const [active, setActive] = useState("calc"); // calc | works | materials
@@ -50,8 +51,8 @@ export default function App() {
   const [drag, setDrag] = useState(null); // { key, startX, startWidth }
   const [uploading, setUploading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [confirmDel, setConfirmDel] = useState({ open:false, code:'', name:'' });
   const [modalData, setModalData] = useState({
-    phase_id: '', phase_name: '',
     stage_id: '', stage_name: '',
     substage_id: '', substage_name: '',
     work_id: '', work_name: '',
@@ -136,13 +137,35 @@ export default function App() {
     setDrag({ key, startX: e.clientX, startWidth: colWidths[key] });
   };
 
-  const updateWork = (index, field, value) => {
-  setWorks((prev) => prev.map((it, i) => (i === index && it.type !== 'group' ? { ...it, [field]: value } : it)));
+  const updateWork = (code, field, value) => {
+    setWorks(prev => prev.map(it => (it.type !== 'group' && it.code === code ? { ...it, [field]: value } : it)));
   };
 
-  const handleSaveRow = (index) => {
-    // Здесь можно вызвать API/сохранение; пока просто логируем
-    console.log('Save work row:', works[index]);
+  const handleSaveRow = (code) => {
+    const row = works.find(w => w.type !== 'group' && w.code === code);
+    if (!row) return;
+    console.log('Save work row:', row);
+    // TODO: вызвать реальный API обновления когда будет готов
+  };
+  const handleDeleteRow = (code) => {
+    const row = works.find(w => w.type !== 'group' && w.code === code);
+    if (!row) return;
+    setConfirmDel({ open:true, code: row.code, name: row.name });
+  };
+
+  const confirmDelete = async () => {
+    const { code } = confirmDel;
+    if (!code) { setConfirmDel({ open:false, code:'', name:'' }); return; }
+    try {
+      const r = await fetch(`/api/admin/work-ref/${encodeURIComponent(code)}`, { method: 'DELETE' });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+      setWorks(prev => prev.filter(it => !(it.type !== 'group' && it.code === code)));
+      setConfirmDel({ open:false, code:'', name:'' });
+    } catch (e) {
+      alert('Ошибка удаления: ' + (e.message || e));
+      setConfirmDel({ open:false, code:'', name:'' });
+    }
   };
   // helper: try multiple URLs, first that succeeds
   async function fetchJsonTry(urls) {
@@ -599,6 +622,37 @@ export default function App() {
                   setTimeout(() => setActive('works'));
                 }}
               />
+              {/* Confirm delete modal */}
+              <FloatingWindow
+                open={confirmDel.open}
+                onClose={()=>setConfirmDel({ open:false, code:'', name:'' })}
+                title="Удалить работу"
+                width={420}
+                center
+                overlay
+                footer={
+                  <>
+                    <button
+                      className="px-4 py-2 text-sm rounded bg-white border border-gray-300 hover:bg-gray-50"
+                      onClick={()=>setConfirmDel({ open:false, code:'', name:'' })}
+                    >Отмена</button>
+                    <button
+                      className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700"
+                      onClick={confirmDelete}
+                    >Удалить</button>
+                  </>
+                }
+                persistKey="confirm-del-work"
+              >
+                <div style={{display:'flex', flexDirection:'column', gap:12}}>
+                  <div style={{fontSize:14, lineHeight:'20px'}}>
+                    Вы действительно хотите удалить работу <strong>{confirmDel.code}</strong>?
+                  </div>
+                  {confirmDel.name && (
+                    <div style={{fontSize:12, color:'#555'}}>«{confirmDel.name}» будет удалена без возможности восстановления.</div>
+                  )}
+                </div>
+              </FloatingWindow>
               {worksLoading && (<div className="p-4 text-sm text-gray-500">Загрузка…</div>)}
               {worksError && (
                 <div className="p-4 text-sm text-red-600 flex items-center gap-3">
@@ -665,6 +719,7 @@ export default function App() {
                         }
                         return true;
                       })
+                      .filter(w => !(w.type==='group' && w.level==='phase'))
                       .map((w, i) => (
                       w.type === 'group' ? (
                         <tr key={`g-${i}`} className="bg-primary-50 font-bold text-gray-700">
@@ -682,44 +737,53 @@ export default function App() {
                         <tr key={`i-${i}`}>
                           <td className="px-2 py-2 text-gray-800">
                             <input
-                              className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0"
+                              className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
                               value={w.code}
                               placeholder="Код"
-                              onChange={(e) => updateWork(i, 'code', e.target.value)}
+                              onChange={(e) => updateWork(w.code, 'code', e.target.value)}
                             />
                           </td>
                           <td className="pl-1 pr-2 py-2 text-gray-800">
                             <input
-                              className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0"
+                              className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
                               value={w.name}
                               placeholder="Наименование"
-                              onChange={(e) => updateWork(i, 'name', e.target.value)}
+                              onChange={(e) => updateWork(w.code, 'name', e.target.value)}
                             />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
                             <input
-                              className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0"
+                              className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
                               value={w.unit}
                               placeholder="Ед.изм."
-                              onChange={(e) => updateWork(i, 'unit', e.target.value)}
+                              onChange={(e) => updateWork(w.code, 'unit', e.target.value)}
                             />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
                             <input
-                              className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0"
+                              className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
                               value={(w.price ?? '')}
                               placeholder="Цена руб."
-                              onChange={(e) => updateWork(i, 'price', e.target.value)}
+                              onChange={(e) => updateWork(w.code, 'price', e.target.value)}
                             />
                           </td>
                           <td className="px-2 py-2 text-right">
-                            <button
-                              className="text-primary-600 hover:text-primary-700 p-1"
-                              title="Сохранить"
-                              onClick={() => handleSaveRow(i)}
-                            >
-                              <span className="material-symbols-outlined">check</span>
-                            </button>
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                className="text-primary-600 hover:text-primary-700 p-1"
+                                title="Сохранить"
+                                onClick={() => handleSaveRow(w.code)}
+                              >
+                                <span className="material-symbols-outlined">check</span>
+                              </button>
+                              <button
+                                className="text-gray-500 hover:text-red-600 p-1"
+                                title="Удалить"
+                                onClick={() => handleDeleteRow(w.code)}
+                              >
+                                <span className="material-symbols-outlined">delete</span>
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       )

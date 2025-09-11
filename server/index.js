@@ -36,7 +36,9 @@ app.get('/api/health', async (req, res) => {
     const r = await pool.query('select 1 as ok');
     res.json({ ok: true, db: r.rows[0].ok === 1 });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    // Более подробное логирование для диагностики подключения к БД
+    console.error('[health] DB error:', e && e.message, e && e.code);
+    res.status(500).json({ ok: false, error: e?.message || 'db error' });
   }
 });
 
@@ -95,78 +97,46 @@ app.get('/api/works-rows', async (req, res) => {
     const substages = substagesR.rows;
     const works = worksR.rows;
 
-    const phaseMap = new Map(phases.map(p => [p.id, p]));
-    const stageMap = new Map(stages.map(s => [s.id, s]));
-    const subMap = new Map(substages.map(ss => [ss.id, ss]));
+    // Натуральная сортировка идентификаторов (учитывает числа внутри строк)
+    const naturalId = (a, b) => {
+      const av = String(a.id || a);
+      const bv = String(b.id || b);
+      return av.localeCompare(bv, 'ru', { numeric: true, sensitivity: 'base' });
+    };
 
-    const phaseKeys = new Set([
-      ...works.map(w => w.phase_id).filter(Boolean),
-      ...stages.map(s => s.phase_id).filter(Boolean),
-      ...phases.map(p => p.id),
-    ]);
+  const phaseMap = new Map(phases.map(p => [p.id, p])); // пока не используем, оставлено для будущего режима с фазами
+  const stageMap = new Map(stages.map(s => [s.id, s])); // потенциально может пригодиться при расширении
+  const subMap = new Map(substages.map(ss => [ss.id, ss]));
 
-    const byPhaseStages = stages.reduce((m, s) => { (m[s.phase_id] ||= []).push(s); return m; }, {});
+  // Группировки
+  const byPhaseStages = stages.reduce((m, s) => { (m[s.phase_id] ||= []).push(s); return m; }, {}); // пока не используем в сортировке
     const byStageSubs = substages.reduce((m, ss) => { (m[ss.stage_id] ||= []).push(ss); return m; }, {});
     const byPhaseWorksOnly = works.reduce((m, w) => { if (w.phase_id && !w.stage_id && !w.substage_id) (m[w.phase_id] ||= []).push(w); return m; }, {});
     const byStageWorksOnly = works.reduce((m, w) => { if (w.stage_id && !w.substage_id) (m[w.stage_id] ||= []).push(w); return m; }, {});
     const bySubWorks = works.reduce((m, w) => { if (w.substage_id) (m[w.substage_id] ||= []).push(w); return m; }, {});
 
-    const sortById = (a, b) => String(a.id || a).localeCompare(String(b.id || b), 'ru');
-    const sortPhaseKeys = (a, b) => {
-      const pa = phaseMap.get(a); const pb = phaseMap.get(b);
-      const sa = pa?.sort_order; const sb = pb?.sort_order;
-      if (typeof sa === 'number' && typeof sb === 'number' && sa !== sb) return sa - sb;
-      if (typeof sa === 'number' && typeof sb !== 'number') return -1;
-      if (typeof sa !== 'number' && typeof sb === 'number') return 1;
-      return String(a).localeCompare(String(b), 'ru');
-    };
+    // Плоский режим: полностью игнорируем фазы. Сортируем все стадии натурально.
     const out = [];
-  const pids = Array.from(phaseKeys).sort(sortPhaseKeys);
-    if (pids.length > 0) {
-      for (const pid of pids) {
-        const p = phaseMap.get(pid);
-        out.push({ type: 'group', code: pid, title: p?.name || pid });
-        for (const w of (byPhaseWorksOnly[pid] || [])) {
+    const stagesSorted = [...stages].sort(naturalId);
+    for (const st of stagesSorted) {
+      out.push({ type: 'group', level: 'stage', code: st.id, title: st.name || st.id });
+      for (const w of (byStageWorksOnly[st.id] || []).sort(naturalId)) {
+        out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
+      }
+      const stSubs = (byStageSubs[st.id] || []).sort(naturalId);
+      for (const ss of stSubs) {
+        out.push({ type: 'group', level: 'substage', code: ss.id, title: ss.name || ss.id });
+        for (const w of (bySubWorks[ss.id] || []).sort(naturalId)) {
           out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
-        }
-        const phaseStages = (byPhaseStages[pid] || []).sort(sortById);
-        for (const st of phaseStages) {
-          out.push({ type: 'group', code: st.id, title: st.name || st.id });
-          for (const w of (byStageWorksOnly[st.id] || [])) {
-            out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
-          }
-          const stSubs = (byStageSubs[st.id] || []).sort(sortById);
-          for (const ss of stSubs) {
-            out.push({ type: 'group', code: ss.id, title: ss.name || ss.id });
-            for (const w of (bySubWorks[ss.id] || [])) {
-              out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
-            }
-          }
         }
       }
-    } else {
-      // Fallback: строим по стадиям/подстадиям, если нет фаз
-      const stagesSorted = [...stages].sort(sortById);
-      for (const st of stagesSorted) {
-        out.push({ type: 'group', code: st.id, title: st.name || st.id });
-        for (const w of (byStageWorksOnly[st.id] || [])) {
-          out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
-        }
-        const stSubs = (byStageSubs[st.id] || []).sort(sortById);
-        for (const ss of stSubs) {
-          out.push({ type: 'group', code: ss.id, title: ss.name || ss.id });
-          for (const w of (bySubWorks[ss.id] || [])) {
-            out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
-          }
-        }
-      }
-      // Дополнительно: работы без stage/substage
-      const orphan = works.filter(w => !w.stage_id && !w.substage_id);
-      if (orphan.length) {
-        out.push({ type: 'group', code: '_ungrouped', title: 'Прочее' });
-        for (const w of orphan) {
-          out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
-        }
+    }
+    // Работы, у которых нет stage/substage (фазовые или полностью без привязки)
+    const orphan = works.filter(w => !w.stage_id && !w.substage_id);
+    if (orphan.length) {
+      out.push({ type: 'group', level: 'orphan', code: '_ungrouped', title: 'Прочее' });
+      for (const w of orphan.sort(naturalId)) {
+        out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
       }
     }
     res.json(out);
@@ -343,6 +313,19 @@ app.post('/api/admin/create-work-ref', async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   } finally {
     client.release();
+  }
+});
+
+// Delete a single work_ref by id
+app.delete('/api/admin/work-ref/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ ok: false, error: 'id required' });
+  try {
+    const { rowCount } = await pool.query('delete from works_ref where id=$1', [id]);
+    if (!rowCount) return res.status(404).json({ ok: false, error: 'not found' });
+    res.json({ ok: true, deleted: true, id });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
