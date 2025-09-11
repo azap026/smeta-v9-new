@@ -329,6 +329,43 @@ app.delete('/api/admin/work-ref/:id', async (req, res) => {
   }
 });
 
+// Patch (partial update / rename) work_ref
+app.patch('/api/admin/work-ref/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ ok:false, error:'id required' });
+  const { new_id, name, unit, unit_price } = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    let currentId = id;
+    if (new_id && new_id !== id) {
+      const dup = await client.query('select 1 from works_ref where id=$1', [new_id]);
+      if (dup.rows.length) { await client.query('rollback'); return res.status(409).json({ ok:false, duplicate:true, error:'new_id already exists' }); }
+      const upd = await client.query('update works_ref set id=$1 where id=$2 returning *', [new_id, id]);
+      if (!upd.rows.length) { await client.query('rollback'); return res.status(404).json({ ok:false, error:'not found' }); }
+      currentId = new_id;
+    }
+    const fields = [];
+    const args = [];
+    if (name !== undefined) { args.push(name); fields.push(`name=$${args.length}`); }
+    if (unit !== undefined) { args.push(unit || null); fields.push(`unit=$${args.length}`); }
+    if (unit_price !== undefined) { const priceNum = unit_price === '' || unit_price == null ? null : Number(unit_price); args.push(priceNum); fields.push(`unit_price=$${args.length}`); }
+    if (fields.length) {
+      args.push(currentId);
+      await client.query(`update works_ref set ${fields.join(', ')} where id=$${args.length}`, args);
+    }
+    const { rows } = await client.query('select id, name, unit, unit_price from works_ref where id=$1', [currentId]);
+    await client.query('commit');
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found after update' });
+    res.json({ ok:true, updated: rows[0] });
+  } catch (e) {
+    await client.query('rollback');
+    res.status(500).json({ ok:false, error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
 // Export works_ref with hierarchy names as CSV
 app.get('/api/admin/export-works-ref', async (req, res) => {
   try {

@@ -138,15 +138,36 @@ export default function App() {
   };
 
   const updateWork = (code, field, value) => {
-    setWorks(prev => prev.map(it => (it.type !== 'group' && it.code === code ? { ...it, [field]: value } : it)));
+    setWorks(prev => prev.map(it => (it.type !== 'group' && it.code === code ? { ...it, [field]: value, _dirty: true } : it)));
   };
 
-  const handleSaveRow = (code) => {
-    const row = works.find(w => w.type !== 'group' && w.code === code);
-    if (!row) return;
-    console.log('Save work row:', row);
-    // TODO: вызвать реальный API обновления когда будет готов
-  };
+  // Автосохранение (debounce 800ms) для изменённых строк
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    if (!works.some(w => w._dirty)) return; // ничего не изменено
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      const dirty = works.filter(w => w._dirty && w.type !== 'group');
+      for (const row of dirty) {
+        try {
+          const payload = { name: row.name, unit: row.unit, unit_price: row.price };
+          // code (id) изменение: если пользователь изменил поле code, row.code уже новое; старый был в _origCode
+          const new_id = row.code !== row._origCode ? row.code : undefined;
+          const r = await fetch(`/api/admin/work-ref/${encodeURIComponent(row._origCode || row.code)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...payload, new_id })
+          });
+          const j = await r.json().catch(()=>({}));
+          if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+          setWorks(prev => prev.map(it => (it === row ? { ...it, _dirty:false, _origCode: j.updated.id, code: j.updated.id, name:j.updated.name, unit:j.updated.unit, price:j.updated.unit_price } : it)));
+        } catch (e) {
+          console.warn('Автосохранение ошибки:', e);
+        }
+      }
+    }, 800);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [works]);
   const handleDeleteRow = (code) => {
     const row = works.find(w => w.type !== 'group' && w.code === code);
     if (!row) return;
@@ -769,13 +790,10 @@ export default function App() {
                           </td>
                           <td className="px-2 py-2 text-right">
                             <div className="flex items-center justify-end gap-1">
-                              <button
-                                className="text-primary-600 hover:text-primary-700 p-1"
-                                title="Сохранить"
-                                onClick={() => handleSaveRow(w.code)}
-                              >
-                                <span className="material-symbols-outlined">check</span>
-                              </button>
+                              {/* Индикатор сохранения */}
+                              {w._dirty && (
+                                <span className="material-symbols-outlined text-yellow-600 animate-pulse" title="Изменения сохраняются">hourglass_empty</span>
+                              )}
                               <button
                                 className="text-gray-500 hover:text-red-600 p-1"
                                 title="Удалить"
