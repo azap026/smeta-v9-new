@@ -745,14 +745,20 @@ export default function App() {
                       w.type === 'group' ? (
                         <tr key={`g-${i}`} className="bg-primary-50 font-bold text-gray-700">
                           <td className="px-2 py-2 text-gray-800">
-                            <button
-                              className="inline-flex items-center justify-center w-6 h-6 mr-1 rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
-                              title={collapsed[w.code] ? 'Развернуть' : 'Свернуть'}
-                              onClick={() => setCollapsed((prev) => ({ ...prev, [w.code]: !prev[w.code] }))}
-                            >{collapsed[w.code] ? '+' : '−'}</button>
-                            {w.code}
+                            <div className="flex items-center">
+                              <button
+                                className={`group-toggle-btn ${collapsed[w.code] ? 'collapsed' : ''}`}
+                                title={collapsed[w.code] ? 'Развернуть' : 'Свернуть'}
+                                onClick={() => setCollapsed((prev) => ({ ...prev, [w.code]: !prev[w.code] }))}
+                              >
+                                <span className="material-symbols-outlined text-[18px] align-middle">{collapsed[w.code] ? 'chevron_right' : 'expand_more'}</span>
+                              </button>
+                              <span>{w.code}</span>
+                            </div>
                           </td>
-                          <td className="px-2 py-2 text-gray-800" colSpan={4}>{w.title}</td>
+                          <td className="px-2 py-2 text-gray-800" colSpan={4}>
+                            <span className="group-title-text">{w.title}</span>
+                          </td>
                         </tr>
                       ) : (
                         <tr key={`i-${i}`}>

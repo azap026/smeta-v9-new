@@ -891,3 +891,9 @@ video {
 .work-table-input:focus { outline:none; border-color:#743bff; box-shadow:0 0 0 2px rgba(116,59,255,.25); background:#fff; }
 .work-table-input::placeholder { color:#9ca3af; }
 
+/* Toggle group button */
+.group-toggle-btn { width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; margin-right:6px; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#4b5563; cursor:pointer; transition:background .15s, border-color .15s, box-shadow .15s; }
+.group-toggle-btn:hover { background:#f4f3ff; border-color:#743bff; color:#5522cc; }
+.group-toggle-btn.collapsed { background:#ffffff; }
+.group-title-text { font-weight:600; letter-spacing:.2px; }
+

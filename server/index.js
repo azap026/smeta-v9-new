@@ -119,24 +119,24 @@ app.get('/api/works-rows', async (req, res) => {
     const out = [];
     const stagesSorted = [...stages].sort(naturalId);
     for (const st of stagesSorted) {
-      out.push({ type: 'group', level: 'stage', code: st.id, title: st.name || st.id });
+      out.push({ type: 'group', level: 'stage', code: st.id, title: st.name || st.id, parents: [] });
       for (const w of (byStageWorksOnly[st.id] || []).sort(naturalId)) {
-        out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
+        out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price, parents: [st.id] });
       }
       const stSubs = (byStageSubs[st.id] || []).sort(naturalId);
       for (const ss of stSubs) {
-        out.push({ type: 'group', level: 'substage', code: ss.id, title: ss.name || ss.id });
+        out.push({ type: 'group', level: 'substage', code: ss.id, title: ss.name || ss.id, parents: [st.id] });
         for (const w of (bySubWorks[ss.id] || []).sort(naturalId)) {
-          out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
+          out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price, parents: [st.id, ss.id] });
         }
       }
     }
     // Работы, у которых нет stage/substage (фазовые или полностью без привязки)
     const orphan = works.filter(w => !w.stage_id && !w.substage_id);
     if (orphan.length) {
-      out.push({ type: 'group', level: 'orphan', code: '_ungrouped', title: 'Прочее' });
+      out.push({ type: 'group', level: 'orphan', code: '_ungrouped', title: 'Прочее', parents: [] });
       for (const w of orphan.sort(naturalId)) {
-        out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price });
+        out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price, parents: ['_ungrouped'] });
       }
     }
     res.json(out);
