@@ -6,10 +6,10 @@ import FloatingWindow from './components/ui/FloatingWindow.jsx';
 export default function App() {
   const [active, setActive] = useState("calc"); // calc | works | materials
   const [works, setWorks] = useState([]);
-  const [worksPage, setWorksPage] = useState(1);
-  const [worksPages, setWorksPages] = useState(1);
-  const [worksTotal, setWorksTotal] = useState(0);
   const WORKS_PAGE_SIZE = 70;
+  const [worksPage, setWorksPage] = useState(1); // текущая страница (для запроса)
+  const [worksHasMore, setWorksHasMore] = useState(false);
+  const [worksTotal, setWorksTotal] = useState(0);
   const [collapsed, setCollapsed] = useState({}); // { [groupCode]: boolean }
 
   // Persist collapsed state per user
@@ -218,15 +218,22 @@ export default function App() {
           `http://127.0.0.1:4000/api/works-rows${params}`,
         ]);
         if (!aborted) {
-          // поддержка двух форматов ответа: массива (старый) и объекта с пагинацией (новый)
-          if (Array.isArray(data)) {
-            setWorks(data);
-            setWorksPages(1);
-            setWorksTotal(data.length);
+          if (worksPage === 1) {
+            if (Array.isArray(data)) {
+              setWorks(data);
+              setWorksTotal(data.length);
+              setWorksHasMore(false);
+            } else {
+              setWorks(data.items || []);
+              setWorksTotal(data.total || 0);
+              setWorksHasMore(!!data.hasMore);
+            }
           } else {
-            setWorks(data.items || []);
-            setWorksPages(data.pages || 1);
-            setWorksTotal(data.total || (data.items?.length || 0));
+            if (!Array.isArray(data)) {
+              setWorks(prev => [...prev, ...(data.items || [])]);
+              setWorksTotal(data.total || prev.length + (data.items?.length||0));
+              setWorksHasMore(!!data.hasMore);
+            }
           }
         }
       } catch (e) {
@@ -815,34 +822,15 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              {/* Пагинация */}
-              <div className="p-4 flex items-center justify-between text-sm text-gray-600 border-t border-gray-100">
-                <div>
-                  Строк: {worksTotal} · Стр.: {worksPage}/{worksPages}
+              {worksHasMore && (
+                <div className="p-4 flex items-center justify-center border-t border-gray-100">
+                  <button
+                    className="px-5 py-2 rounded-lg text-sm bg-primary-50 text-primary-700 border border-primary-200 hover:bg-primary-100 disabled:opacity-50"
+                    disabled={worksLoading}
+                    onClick={() => setWorksPage(p => p + 1)}
+                  >Показать ещё {WORKS_PAGE_SIZE} строк</button>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
-                    disabled={worksPage <= 1 || worksLoading}
-                    onClick={() => setWorksPage(1)}
-                  >« Первая</button>
-                  <button
-                    className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
-                    disabled={worksPage <= 1 || worksLoading}
-                    onClick={() => setWorksPage(p => Math.max(1, p - 1))}
-                  >‹ Пред</button>
-                  <button
-                    className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
-                    disabled={worksPage >= worksPages || worksLoading}
-                    onClick={() => setWorksPage(p => Math.min(worksPages, p + 1))}
-                  >След ›</button>
-                  <button
-                    className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
-                    disabled={worksPage >= worksPages || worksLoading}
-                    onClick={() => setWorksPage(worksPages)}
-                  >Последняя »</button>
-                </div>
-              </div>
+              )}
             </div>
             ) : (
               <div className="bg-white rounded-xl shadow-sm overflow-hidden">

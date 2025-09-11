@@ -86,6 +86,9 @@ app.get('/api/works-ref', async (req, res) => {
 // Flat rows (groups + items) for UI rendering
 app.get('/api/works-rows', async (req, res) => {
   try {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limitRaw = parseInt(req.query.limit) || 70;
+  const limit = Math.min(70, Math.max(1, limitRaw));
     const [phasesR, stagesR, substagesR, worksR] = await Promise.all([
       pool.query('select * from phases'),
       pool.query('select * from stages'),
@@ -139,6 +142,17 @@ app.get('/api/works-rows', async (req, res) => {
         out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price, parents: ['_ungrouped'] });
       }
     }
+    // Пагинация (простое нарезание по итоговому плоскому списку)
+    const total = out.length;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+    const items = out.slice(start, end);
+    const hasMore = end < total;
+    // Если клиент явно запросил пагинацию (page/limit) — возвращаем объект
+    if (req.query.page || req.query.limit) {
+      return res.json({ items, page, limit, total, hasMore });
+    }
+    // Иначе прежнее поведение (весь список)
     res.json(out);
   } catch (e) {
     res.status(500).json({ error: e.message });
