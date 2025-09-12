@@ -1092,8 +1092,8 @@ export default function App() {
                                   <img
                                     src={m.image_url}
                                     alt="preview"
-                                    className="h-7 w-7 object-cover rounded border border-gray-200 bg-white group-hover:shadow"
-                                    style={{minWidth:28,minHeight:28}}
+                                    className="object-cover rounded border border-gray-200 bg-white group-hover:shadow"
+                                    style={{ width:28, height:28, minWidth:28, minHeight:28, maxWidth:28, maxHeight:28, display:'block' }}
                                     onError={(e)=>{ e.currentTarget.style.display='none'; }}
                                   />
                                 </a>
