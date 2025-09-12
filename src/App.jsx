@@ -861,10 +861,16 @@ export default function App() {
               {worksHasMore && (
                 <div className="p-4 flex items-center justify-center border-t border-gray-100">
                   <button
-                    className="px-5 py-2 rounded-lg text-sm bg-primary-50 text-primary-700 border border-primary-200 hover:bg-primary-100 disabled:opacity-50"
+                    className="px-6 py-2.5 rounded-lg text-sm font-medium bg-primary-50 text-primary-700 border border-primary-200 hover:bg-primary-100 disabled:opacity-50 shadow-sm flex items-center justify-center gap-2 transition-colors"
+                    style={{ minWidth: 240 }}
                     disabled={worksLoading}
                     onClick={() => setWorksPage(p => p + 1)}
-                  >Показать ещё {WORKS_PAGE_SIZE} строк</button>
+                  >
+                    {worksLoading && (
+                      <span className="material-symbols-outlined text-base animate-spin-slow" style={{fontSize:16}}>progress_activity</span>
+                    )}
+                    <span>{worksLoading ? 'Загрузка…' : `Показать ещё ${WORKS_PAGE_SIZE} строк`}</span>
+                  </button>
                 </div>
               )}
             </div>

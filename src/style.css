@@ -897,3 +897,7 @@ video {
 .group-toggle-btn.collapsed { background:#ffffff; }
 .group-title-text { font-weight:600; letter-spacing:.2px; }
 
+/* Slow spin animation for loading icon */
+@keyframes spin-slow { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+.animate-spin-slow { animation: spin-slow 1.4s linear infinite; }
+
