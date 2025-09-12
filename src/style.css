@@ -901,3 +901,11 @@ video {
 @keyframes spin-slow { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
 .animate-spin-slow { animation: spin-slow 1.4s linear infinite; }
 
+/* ===== Autocomplete suggestions (глобально, не зависят от #webcrumbs) ===== */
+.fw-suggest-list { box-sizing:border-box; }
+.fw-suggest-item { display:block; width:100%; text-align:left; border:1px solid #c5cad1; background:#ffffff; padding:8px 12px; font-size:13px; line-height:1.35; cursor:pointer; font-family:"Open Sans", system-ui, sans-serif; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,.06); transition:background .12s, border-color .12s; }
+.fw-suggest-item + .fw-suggest-item { margin-top:6px; }
+.fw-suggest-item:hover { background:#f5f0ff; }
+.fw-suggest-item.is-active { border-color:#6d28d9; background:#f5f0ff; box-shadow:0 0 0 1px #6d28d9 inset, 0 2px 4px -2px rgba(0,0,0,.15); }
+.fw-suggest-empty { padding:10px 14px; font-size:13px; color:#6b7280; }
+

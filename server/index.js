@@ -8,6 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import { importFromCsv } from './importer.js';
 import { importMaterialsCsv } from './import_materials.js';
+import { parse } from 'csv-parse/sync';
 const { Pool } = pkg;
 
 dotenv.config();
@@ -306,6 +307,138 @@ app.delete('/api/materials/:id', async (req, res) => {
     if (!rowCount) return res.status(404).json({ ok:false, error:'not found' });
     res.json({ ok:true, deleted:true, id: req.params.id });
   } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+
+// ===================== WORK ↔ MATERIAL normative links =====================
+// List materials for a work with normative consumption
+app.get('/api/work-materials/:work_id', async (req,res) => {
+  try {
+    const { rows } = await pool.query(`select wm.work_id, wm.material_id,
+      m.name as material_name, m.unit as material_unit, m.unit_price as material_unit_price, m.image_url as material_image_url,
+      wm.consumption_per_work_unit, wm.waste_coeff,
+      w.name as work_name, w.unit as work_unit, w.unit_price as work_unit_price,
+      w.stage_id, w.substage_id, st.name as stage_name, ss.name as substage_name
+      from work_materials wm
+      left join works_ref w on w.id = wm.work_id
+      left join stages st on st.id = w.stage_id
+      left join substages ss on ss.id = w.substage_id
+      left join materials m on m.id = wm.material_id
+      where wm.work_id=$1
+      order by wm.material_id`, [req.params.work_id]);
+    // метаданные по работе берём из первой строки если есть
+    let meta = null;
+    if (rows.length) {
+      const r0 = rows[0];
+      meta = {
+        work_id: r0.work_id,
+        work_name: r0.work_name,
+        work_unit: r0.work_unit,
+        work_unit_price: r0.work_unit_price,
+        stage_id: r0.stage_id,
+        stage_name: r0.stage_name,
+        substage_id: r0.substage_id,
+        substage_name: r0.substage_name
+      };
+    } else {
+      // fallback: всё равно попробуем вытащить саму работу без материалов
+      const wq = await pool.query(`select w.id as work_id, w.name as work_name, w.unit as work_unit, w.unit_price as work_unit_price, w.stage_id, w.substage_id, st.name as stage_name, ss.name as substage_name
+        from works_ref w
+        left join stages st on st.id = w.stage_id
+        left join substages ss on ss.id = w.substage_id
+        where w.id=$1`, [req.params.work_id]);
+      if (wq.rows.length) {
+        const r0 = wq.rows[0];
+        meta = { ...r0 };
+      }
+    }
+  // Добавим image_url в каждом материале (material_image_url)
+  const items = rows.map(r => ({ ...r }));
+  res.json({ ok:true, items, meta });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Upsert link
+app.post('/api/work-materials', async (req,res) => {
+  const { work_id, material_id, consumption_per_work_unit, waste_coeff } = req.body || {};
+  if (!work_id || !material_id) return res.status(400).json({ ok:false, error:'work_id and material_id required' });
+  try {
+    const cpu = consumption_per_work_unit===''||consumption_per_work_unit==null? null : Number(consumption_per_work_unit);
+    const wc = waste_coeff===''||waste_coeff==null?1:Number(waste_coeff);
+    await pool.query(`insert into work_materials(work_id, material_id, consumption_per_work_unit, waste_coeff)
+      values($1,$2,$3,$4)
+      on conflict (work_id, material_id) do update set consumption_per_work_unit=excluded.consumption_per_work_unit, waste_coeff=excluded.waste_coeff, updated_at=now()`,
+      [work_id, material_id, cpu, wc]);
+    res.status(201).json({ ok:true });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Delete link
+app.delete('/api/work-materials/:work_id/:material_id', async (req,res) => {
+  try {
+    await pool.query('delete from work_materials where work_id=$1 and material_id=$2', [req.params.work_id, req.params.material_id]);
+    res.json({ ok:true, deleted:true });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Bundles: все работы с их материалами (для массового создания блоков)
+app.get('/api/work-materials-bundles', async (req,res) => {
+  try {
+  const { rows } = await pool.query(`select wm.work_id,
+        w.name as work_name, w.unit as work_unit, w.unit_price as work_unit_price,
+        w.stage_id, w.substage_id, st.name as stage_name, ss.name as substage_name,
+    wm.material_id, m.name as material_name, m.unit as material_unit, m.unit_price as material_unit_price, m.image_url as material_image_url,
+        wm.consumption_per_work_unit, wm.waste_coeff
+      from work_materials wm
+      left join works_ref w on w.id = wm.work_id
+      left join stages st on st.id = w.stage_id
+      left join substages ss on ss.id = w.substage_id
+      left join materials m on m.id = wm.material_id
+      order by wm.work_id, wm.material_id`);
+    const map = new Map();
+    for (const r of rows) {
+      if (!map.has(r.work_id)) {
+        map.set(r.work_id, { work:{ id:r.work_id, name:r.work_name||r.work_id, unit:r.work_unit||'', unit_price:r.work_unit_price, stage_id:r.stage_id, stage_name:r.stage_name, substage_id:r.substage_id, substage_name:r.substage_name }, materials:[] });
+      }
+      map.get(r.work_id).materials.push({
+        code: r.material_id,
+        name: r.material_name || r.material_id,
+        unit: r.material_unit || '',
+        quantity: r.consumption_per_work_unit!=null ? String(r.consumption_per_work_unit) : '',
+        unit_price: r.material_unit_price!=null ? String(r.material_unit_price) : '',
+        image_url: r.material_image_url || '',
+        total: ''
+      });
+    }
+    res.json({ ok:true, items: Array.from(map.values()) });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Import CSV of links (semicolon separated). Headers: work_id;material_id;consumption_per_work_unit;waste_coeff
+app.post('/api/admin/import-work-materials', upload.single('file'), async (req,res) => {
+  if (!req.file) return res.status(400).json({ ok:false, error:'file required' });
+  const tmpPath = req.file.path;
+  try {
+    const content = fs.readFileSync(tmpPath, 'utf8');
+    const records = parse(content, { delimiter: ';', columns: true, skip_empty_lines: true, trim: true });
+    let inserted=0, updated=0, skipped=0;
+    for (const r of records) {
+      const work_id = (r.work_id || r.WORK_ID || '').trim();
+      const material_id = (r.material_id || r.MATERIAL_ID || '').trim();
+      if (!work_id || !material_id) { skipped++; continue; }
+      const cpuRaw = r.consumption_per_work_unit || r.CONSUMPTION_PER_WORK_UNIT || r.cpu || '';
+      const wcRaw = r.waste_coeff || r.WASTE_COEFF || r.wc || '';
+      const cpu = cpuRaw===''? null : Number(String(cpuRaw).replace(/,/g,'.'));
+      const wc = wcRaw===''? 1 : Number(String(wcRaw).replace(/,/g,'.'));
+      try {
+        const resUp = await pool.query(`insert into work_materials(work_id, material_id, consumption_per_work_unit, waste_coeff)
+          values($1,$2,$3,$4)
+          on conflict (work_id, material_id) do update set consumption_per_work_unit=excluded.consumption_per_work_unit, waste_coeff=excluded.waste_coeff, updated_at=now() returning (xmax=0) as inserted`,
+          [work_id, material_id, cpu, wc]);
+        if (resUp.rows[0] && resUp.rows[0].inserted) inserted++; else updated++;
+      } catch (e) { skipped++; }
+    }
+    res.json({ ok:true, inserted, updated, skipped, total: records.length });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:e.message });
+  } finally {
+    fs.unlink(tmpPath, ()=>{});
+  }
 });
 
 // Export materials CSV
@@ -615,6 +748,160 @@ app.delete('/api/works/:id', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ========================= ESTIMATES (Расчет сметы) =========================
+// List estimates
+app.get('/api/estimates', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from estimates order by id desc');
+    res.json({ ok:true, items: rows });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Create estimate
+app.post('/api/estimates', async (req, res) => {
+  const { code, title, client_name, status, currency } = req.body || {};
+  if (!title) return res.status(400).json({ ok:false, error:'title required' });
+  try {
+    const { rows } = await pool.query(
+      `insert into estimates(code,title,client_name,status,currency) values($1,$2,$3,coalesce($4,'draft'),coalesce($5,'RUB')) returning *`,
+      [code||null,title,client_name||null,status||null,currency||null]
+    );
+    res.status(201).json({ ok:true, estimate: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Get single estimate (with optional aggregated totals later)
+app.get('/api/estimates/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from estimates where id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, estimate: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Patch estimate
+app.patch('/api/estimates/:id', async (req, res) => {
+  const { id } = req.params;
+  const { code, title, client_name, status, currency } = req.body || {};
+  const sets=[]; const args=[];
+  if (code !== undefined) { args.push(code||null); sets.push(`code=$${args.length}`); }
+  if (title !== undefined) { args.push(title); sets.push(`title=$${args.length}`); }
+  if (client_name !== undefined) { args.push(client_name||null); sets.push(`client_name=$${args.length}`); }
+  if (status !== undefined) { args.push(status||null); sets.push(`status=$${args.length}`); }
+  if (currency !== undefined) { args.push(currency||null); sets.push(`currency=$${args.length}`); }
+  if (!sets.length) return res.json({ ok:true, noop:true });
+  try {
+    args.push(id);
+    const { rows } = await pool.query(`update estimates set ${sets.join(', ')}, updated_at=now() where id=$${args.length} returning *`, args);
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, estimate: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Delete estimate (cascade)
+app.delete('/api/estimates/:id', async (req,res) => {
+  try {
+    const r = await pool.query('delete from estimates where id=$1', [req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, deleted:true });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+
+// Estimate items (works inside estimate)
+app.get('/api/estimates/:id/items', async (req,res) => {
+  try {
+    const { rows } = await pool.query('select * from estimate_items where estimate_id=$1 order by sort_order, id', [req.params.id]);
+    res.json({ ok:true, items: rows });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+app.post('/api/estimates/:id/items', async (req,res) => {
+  const estimateId = req.params.id;
+  const { work_id, quantity, unit_price } = req.body || {};
+  if (!work_id) return res.status(400).json({ ok:false, error:'work_id required' });
+  try {
+    // Снимок
+    const wr = await pool.query('select id,name,unit,unit_price,phase_id,stage_id,substage_id from works_ref where id=$1',[work_id]);
+    let snap = { id: work_id, name: null, unit:null, unit_price:null, phase_id:null, stage_id:null, substage_id:null };
+    if (wr.rows.length) snap = wr.rows[0];
+    const qtyNum = quantity==null?0:Number(quantity);
+    const up = unit_price==null? snap.unit_price : Number(unit_price);
+    const { rows } = await pool.query(`insert into estimate_items(estimate_id, work_id, work_code, work_name, unit, quantity, unit_price, phase_id, stage_id, substage_id)
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+      [estimateId, snap.id, snap.id, snap.name, snap.unit, qtyNum, up, snap.phase_id, snap.stage_id, snap.substage_id]);
+    res.status(201).json({ ok:true, item: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+app.patch('/api/estimate-items/:itemId', async (req,res) => {
+  const { itemId } = req.params;
+  const { quantity, unit_price, sort_order, work_name } = req.body || {};
+  const sets=[]; const args=[];
+  if (quantity !== undefined) { args.push(Number(quantity)); sets.push(`quantity=$${args.length}`); }
+  if (unit_price !== undefined) { const v = unit_price===''||unit_price==null?null:Number(unit_price); args.push(v); sets.push(`unit_price=$${args.length}`); }
+  if (sort_order !== undefined) { args.push(Number(sort_order)); sets.push(`sort_order=$${args.length}`); }
+  if (work_name !== undefined) { args.push(work_name); sets.push(`work_name=$${args.length}`); }
+  if (!sets.length) return res.json({ ok:true, noop:true });
+  try {
+    args.push(itemId);
+    const { rows } = await pool.query(`update estimate_items set ${sets.join(', ')}, updated_at=now() where id=$${args.length} returning *`, args);
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, item: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+app.delete('/api/estimate-items/:itemId', async (req,res) => {
+  try {
+    const r = await pool.query('delete from estimate_items where id=$1', [req.params.itemId]);
+    if (!r.rowCount) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, deleted:true });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+
+// Materials inside estimate item
+app.get('/api/estimate-items/:itemId/materials', async (req,res) => {
+  try {
+    const { rows } = await pool.query('select * from estimate_item_materials where estimate_item_id=$1 order by sort_order, id', [req.params.itemId]);
+    res.json({ ok:true, items: rows });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+app.post('/api/estimate-items/:itemId/materials', async (req,res) => {
+  const { itemId } = req.params;
+  const { material_id, consumption_per_work_unit, waste_coeff, quantity, unit_price } = req.body || {};
+  if (!material_id) return res.status(400).json({ ok:false, error:'material_id required' });
+  try {
+    const m = await pool.query('select id,name,unit,unit_price from materials where id=$1', [material_id]);
+    let snap = { id: material_id, name:null, unit:null, unit_price:null };
+    if (m.rows.length) snap = m.rows[0];
+    const cpu = consumption_per_work_unit==null? null : Number(consumption_per_work_unit);
+    const wc = waste_coeff==null? 1 : Number(waste_coeff);
+    const qty = quantity==null? null : Number(quantity);
+    const up = unit_price==null? snap.unit_price : Number(unit_price);
+    const { rows } = await pool.query(`insert into estimate_item_materials(estimate_item_id, material_id, material_code, material_name, unit, consumption_per_work_unit, waste_coeff, quantity, unit_price)
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+      [itemId, snap.id, snap.id, snap.name, snap.unit, cpu, wc, qty, up]);
+    res.status(201).json({ ok:true, material: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+app.patch('/api/estimate-item-materials/:id', async (req,res) => {
+  const { id } = req.params;
+  const { consumption_per_work_unit, waste_coeff, quantity, unit_price, material_name, sort_order } = req.body || {};
+  const sets=[]; const args=[];
+  if (consumption_per_work_unit !== undefined) { const v=consumption_per_work_unit===''||consumption_per_work_unit==null?null:Number(consumption_per_work_unit); args.push(v); sets.push(`consumption_per_work_unit=$${args.length}`); }
+  if (waste_coeff !== undefined) { args.push(waste_coeff==null?1:Number(waste_coeff)); sets.push(`waste_coeff=$${args.length}`); }
+  if (quantity !== undefined) { const v=quantity===''||quantity==null?null:Number(quantity); args.push(v); sets.push(`quantity=$${args.length}`); }
+  if (unit_price !== undefined) { const v=unit_price===''||unit_price==null?null:Number(unit_price); args.push(v); sets.push(`unit_price=$${args.length}`); }
+  if (material_name !== undefined) { args.push(material_name); sets.push(`material_name=$${args.length}`); }
+  if (sort_order !== undefined) { args.push(Number(sort_order)); sets.push(`sort_order=$${args.length}`); }
+  if (!sets.length) return res.json({ ok:true, noop:true });
+  try {
+    args.push(id);
+    const { rows } = await pool.query(`update estimate_item_materials set ${sets.join(', ')}, updated_at=now() where id=$${args.length} returning *`, args);
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, material: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+app.delete('/api/estimate-item-materials/:id', async (req,res) => {
+  try {
+    const r = await pool.query('delete from estimate_item_materials where id=$1', [req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, deleted:true });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
 });
 
 const port = process.env.PORT || 4000;

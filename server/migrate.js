@@ -92,6 +92,85 @@ create table if not exists materials (
 );
 
 create index if not exists idx_materials_name on materials using gin (to_tsvector('simple', name));
+
+-- Нормативная связка работы и материалов (многие-ко-многим)
+create table if not exists work_materials (
+  work_id text not null references works_ref(id) on delete cascade,
+  material_id text not null references materials(id) on delete cascade,
+  consumption_per_work_unit numeric(18,6), -- сколько материала на 1 ед. работы
+  waste_coeff numeric(8,4) default 1.0,    -- коэффициент запаса/потерь
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  primary key (work_id, material_id)
+);
+create index if not exists idx_work_materials_material on work_materials(material_id);
+
+-- =============================
+-- СМЕТА (структура вкладки "Расчет сметы")
+-- =============================
+-- Документ сметы (шапка). Храним код/название/клиента и статусы.
+create table if not exists estimates (
+  id serial primary key,
+  code text unique,
+  title text not null,
+  client_name text,
+  status text default 'draft', -- draft | approved | archived
+  currency text default 'RUB',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+-- Позиции сметы (работы). Снимок на момент добавления: имя, ед., базовая цена.
+-- Храним ссылки на иерархию для группировки без доп. join-ов.
+create table if not exists estimate_items (
+  id serial primary key,
+  estimate_id int not null references estimates(id) on delete cascade,
+  work_id text references works_ref(id) on delete set null,
+  work_code text,            -- дублируем id работы для быстрого доступа/истории
+  work_name text,            -- снимок названия
+  unit text,                 -- снимок единицы
+  quantity numeric(18,4) not null default 0,
+  unit_price numeric(14,2),  -- снимок цены работы (может обновляться вручную независимо от works_ref)
+  phase_id text,             -- для будущей группировки, nullable
+  stage_id text,
+  substage_id text,
+  sort_order int default 0,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists idx_estimate_items_estimate on estimate_items(estimate_id);
+create index if not exists idx_estimate_items_stage on estimate_items(stage_id);
+create index if not exists idx_estimate_items_substage on estimate_items(substage_id);
+
+-- Материалы, связанные с конкретной позицией сметы.
+-- quantity = рассчитанное или вручную заданное итоговое кол-во для данной позиции.
+create table if not exists estimate_item_materials (
+  id serial primary key,
+  estimate_item_id int not null references estimate_items(id) on delete cascade,
+  material_id text references materials(id) on delete set null,
+  material_code text,         -- снимок id материала
+  material_name text,         -- снимок названия
+  unit text,                  -- ед. измерения материала (снимок)
+  consumption_per_work_unit numeric(18,6), -- норматив расхода на 1 ед. работы (копия из связи или ручной ввод)
+  waste_coeff numeric(8,4) default 1.0,
+  quantity numeric(18,6),     -- итоговое количество материала (quantity_work * consumption * waste) – можно пересчитывать
+  unit_price numeric(14,2),   -- снимок цены материала
+  sort_order int default 0,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists idx_eim_item on estimate_item_materials(estimate_item_id);
+create index if not exists idx_eim_material on estimate_item_materials(material_id);
+
+-- Представление для быстрого агрегирования (сумма по работам) - опционально (создаем по необходимости)
+-- create or replace view v_estimate_items_totals as
+--   select ei.id as estimate_item_id,
+--          coalesce(sum(eim.quantity * coalesce(eim.unit_price,0)),0) as materials_total,
+--          (ei.quantity * coalesce(ei.unit_price,0)) as work_total,
+--          (ei.quantity * coalesce(ei.unit_price,0)) + coalesce(sum(eim.quantity * coalesce(eim.unit_price,0)),0) as item_grand_total
+--   from estimate_items ei
+--   left join estimate_item_materials eim on eim.estimate_item_id = ei.id
+--   group by ei.id;
 `;
 
 (async () => {

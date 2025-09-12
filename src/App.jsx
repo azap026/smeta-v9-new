@@ -1,4 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
+// Конфиг ширин/высот для вкладки "Расчет сметы" — меняйте цифры здесь
+export const calcColWidths = {
+  idx: 60,          // № / код работы
+  name: 500,        // Наименование работ / материалов
+  image: 70,        // Превью изображения материала
+  unit: 80,         // Единица измерения
+  qty: 90,          // Количество
+  unitPrice: 110,   // Цена за единицу
+  mats: 120,        // Сумма по материалу / столбец материалов (итог)
+  labor: 130,       // Оплата труда / сумма по работе
+  actions: 110      // Кнопки / действия
+};
+export const calcRowHeights = {
+  work: 40,
+  material: 40,
+  total: 36,
+};
 import AddWorkModal from './components/AddWorkModal.tsx';
 import { Label, Input, Button } from './components/ui/form';
 import FloatingWindow from './components/ui/FloatingWindow.jsx';
@@ -49,8 +66,94 @@ export default function App() {
   const [materialsLoading, setMaterialsLoading] = useState(false);
   const [materialsError, setMaterialsError] = useState('');
   const materialsSearchDebounce = useRef(null);
-  const [colWidths, setColWidths] = useState({ code: 90, name: 600, unit: 100, price: 140, action: 48 });
-  const [drag, setDrag] = useState(null); // { key, startX, startWidth }
+  // ===== Calc template blocks (эталонные блоки) =====
+  const [calcBlocks, setCalcBlocks] = useState([]); // [{id, groupName, work:{}, materials:[{}}]]
+  // Справочник названий для разделов/подразделов (по их id)
+  const [groupTitles, setGroupTitles] = useState({}); // { stage_id: title }
+  const [addBlockModal, setAddBlockModal] = useState(false);
+  const [addBlockForm, setAddBlockForm] = useState({
+    work_input:'', // пользователь вводит код или часть названия
+    resolvedWork:null // {id,name,unit,unit_price}
+  });
+  const [addBlockError, setAddBlockError] = useState('');
+  const [workSearchLoading, setWorkSearchLoading] = useState(false);
+  const [workSuggestions, setWorkSuggestions] = useState([]); // [{id,name,unit,unit_price}]
+  const workSuggestTimer = useRef(null);
+  const [workSuggestIndex, setWorkSuggestIndex] = useState(-1); // текущая подсвеченная строка
+  const suggestionListRef = useRef(null);
+  // Автопрокрутка подсвеченного пункта
+  useEffect(() => {
+    if (!suggestionListRef.current) return;
+    if (workSuggestIndex < 0) return;
+    const children = suggestionListRef.current.querySelectorAll('[data-suggest-row="1"]');
+    if (workSuggestIndex >= children.length) return;
+    const el = children[workSuggestIndex];
+    if (el && el.scrollIntoView) {
+      const listRect = suggestionListRef.current.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      if (elRect.top < listRect.top || elRect.bottom > listRect.bottom) {
+        el.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  }, [workSuggestIndex]);
+  const openAddBlockModal = () => { setAddBlockForm({ work_input:'', resolvedWork:null }); setWorkSuggestions([]); setAddBlockModal(true); };
+  const [creatingBlock, setCreatingBlock] = useState(false);
+  const createCalcBlock = async () => {
+    if (creatingBlock) return;
+    setAddBlockError('');
+    if (!addBlockForm.resolvedWork) {
+      setAddBlockError('Выберите работу из справочника');
+      return;
+    }
+    setCreatingBlock(true);
+    const w = addBlockForm.resolvedWork;
+    let materials = [];
+    let metaInfo = null;
+    try {
+      const r = await fetch(`/api/work-materials/${encodeURIComponent(w.id)}`);
+      const j = await r.json().catch(()=>({}));
+      if (r.ok && j.ok) {
+        if (j.meta) metaInfo = j.meta;
+        if (Array.isArray(j.items) && j.items.length) {
+          materials = j.items.map(it => ({
+            code: it.material_id,
+            name: it.material_name || it.material_id,
+            unit: it.material_unit || '',
+            quantity: it.consumption_per_work_unit ? String(it.consumption_per_work_unit) : '',
+            unit_price: it.material_unit_price!=null? String(it.material_unit_price):'',
+            image_url: it.material_image_url || '',
+            total:''
+          }));
+        } else {
+          materials = [{ name:'', unit:'', quantity:'', unit_price:'', total:'' }];
+        }
+      } else {
+        materials = [{ name:'', unit:'', quantity:'', unit_price:'', total:'' }];
+      }
+    } catch {
+      materials = [{ name:'', unit:'', quantity:'', unit_price:'', total:'' }];
+    }
+    const id = Date.now() + '_' + Math.random().toString(36).slice(2);
+    const block = {
+      id,
+      groupName: (metaInfo && (metaInfo.stage_name || metaInfo.substage_name)) || '',
+  work: { code: w.id, name: w.name, unit: w.unit||'', quantity:'', unit_price:(w.unit_price??'')+'', labor_total:0, stage_id: metaInfo?.stage_id, substage_id: metaInfo?.substage_id, stage_name: metaInfo?.stage_name, substage_name: metaInfo?.substage_name },
+      materials
+    };
+    setCalcBlocks(prev => [...prev, block]);
+    setAddBlockModal(false);
+    setCreatingBlock(false);
+  };
+  const addCalcBlockEmpty = () => { // запасной быстрый вариант (не используется но можно оставить)
+    setCalcBlocks(prev => [...prev, { id:Date.now()+'_'+Math.random().toString(36).slice(2), groupName:'', work:{ name:'', unit:'', quantity:'', unit_price:'', image:'', labor_total:0 }, materials:[{ name:'', unit:'', quantity:'', unit_price:'', total:'' }] }]);
+  };
+  const updateBlock = (id, updater) => {
+    setCalcBlocks(prev => prev.map(b => b.id===id ? updater(b) : b));
+  };
+  // ===== Ширины столбцов и drag-состояние (независимое расширение таблицы) =====
+  // Фиксированные ширины колонок
+  const colWidths = { code: 50, name: 600, unit: 100, price: 140, action: 48 }; // works
+  const materialsColWidths = { id: 90, name: 600, unit: 70, price: 120, expenditure: 110, weight: 100, image: 120, item: 120, action: 60 };
   const [uploading, setUploading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [confirmDel, setConfirmDel] = useState({ open:false, code:'', name:'' });
@@ -73,72 +176,13 @@ export default function App() {
     }, 0);
     return () => clearTimeout(t);
   }, [modalOpen]);
-  const submitAddModal = async () => {
-    // простая валидация
-    if (!modalData.work_id?.trim() || !modalData.work_name?.trim()) {
-      alert('Укажите work_id и work_name');
-      return;
-    }
-    try {
-      const r = await fetch('/api/admin/upsert-work-ref', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(modalData)
-      });
-      const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
-      closeAddModal();
-      // перезагрузка текущей страницы (учитываем поиск)
-      const qParam = worksSearch ? `&q=${encodeURIComponent(worksSearch)}` : '';
-      const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}${qParam}`;
-      const data = await fetchJsonTry([
-        `/api/works-rows${params}`,
-        `http://localhost:4000/api/works-rows${params}`,
-        `http://127.0.0.1:4000/api/works-rows${params}`,
-      ]);
-      if (Array.isArray(data)) {
-        setWorks(data); setWorksTotal(data.length);
-      } else {
-        setWorks(data.items || []); setWorksTotal(data.total || (data.items?.length || 0));
-      }
-    } catch (e) {
-      alert('Ошибка сохранения: '+(e.message||e));
-    }
+  // Авто-ресайз текстовых областей (перенос строк) для столбца "Наименование"
+  const autoGrow = (el) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = (el.scrollHeight) + 'px';
   };
 
-  useEffect(() => {
-    if (!drag) return;
-    const min = { code: 60, name: 200, unit: 70, price: 100 };
-    const onMove = (e) => {
-      const dx = e.clientX - drag.startX;
-      setColWidths((prev) => {
-        const next = { ...prev };
-        const base = drag.startWidth;
-        const w = Math.max(min[drag.key] ?? 60, base + dx);
-        next[drag.key] = w;
-        return next;
-      });
-    };
-    const onUp = () => {
-      setDrag(null);
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [drag]);
-
-  const startResize = (key) => (e) => {
-    e.preventDefault();
-    setDrag({ key, startX: e.clientX, startWidth: colWidths[key] });
-  };
 
   const updateWork = (code, field, value) => {
     setWorks(prev => prev.map(it => (it.type !== 'group' && it.code === code ? { ...it, [field]: value, _dirty: true } : it)));
@@ -265,6 +309,10 @@ export default function App() {
   const updateMaterial = (id, field, value) => {
     setMaterials(prev => prev.map(m => (m._rowId === id ? { ...m, [field]: value, _dirty: true } : m)));
   };
+  
+  // Суммарные ширины таблиц для горизонтального скролла
+  const worksTotalWidth = Object.values(colWidths).reduce((a,b)=>a+b,0);
+  const materialsTotalWidth = Object.values(materialsColWidths).reduce((a,b)=>a+b,0);
   // Создание новой строки материала (в конце списка, локально, потом сохранение)
   const addMaterialRow = () => {
     const tmpId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -358,6 +406,39 @@ export default function App() {
     }, 400);
     return () => { if (materialsSearchDebounce.current) clearTimeout(materialsSearchDebounce.current); };
   }, [materialsSearch, active]);
+  const [bulkLoading,setBulkLoading]=useState(false);
+  // Подгрузим справочник работ (только группы) при открытой вкладке calc для отображения названий разделов вместо кода
+  useEffect(() => {
+    if (active !== 'calc') return;
+    let aborted = false;
+    (async () => {
+      try {
+        const data = await fetch('/api/works-rows').then(r=> r.json()).catch(()=>null);
+        if (!data) return;
+        const items = Array.isArray(data) ? data : (data.items||[]);
+        const map = {};
+        for (const it of items) {
+          if (it.type === 'group') map[it.code] = it.title || it.code;
+        }
+        if (!aborted) setGroupTitles(map);
+      } catch {}
+    })();
+    return () => { aborted = true; };
+  }, [active]);
+  const createBlocksFromAllBundles = async ()=>{
+    if(bulkLoading) return; setBulkLoading(true);
+    try {
+      const r = await fetch('/api/work-materials-bundles');
+      const j = await r.json().catch(()=>({}));
+      if(!r.ok || !j.ok || !Array.isArray(j.items)) { alert('Ошибка загрузки связок'); return; }
+      const newBlocks = j.items.map(it=>({
+        id: 'bulk_'+it.work.id+'_'+Math.random().toString(36).slice(2),
+        groupName: it.work.stage_name || it.work.substage_name || '',
+        work: { code: it.work.id, name: it.work.name, unit: it.work.unit||'', quantity:'', unit_price: it.work.unit_price!=null? String(it.work.unit_price):'', image:'', labor_total:0, stage_id: it.work.stage_id, substage_id: it.work.substage_id },
+        materials: it.materials
+      }));
+      setCalcBlocks(prev=>[...prev, ...newBlocks]);
+    } finally { setBulkLoading(false);} };
   return (
     <div id="webcrumbs"> 
       <div className="min-h-screen bg-gray-50 font-sans flex">
@@ -506,13 +587,31 @@ export default function App() {
             <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
               <div className="p-4 border-b border-gray-200 flex justify-between items-center">
                 <h2 className="font-semibold text-lg">Работы и материалы</h2>
-                <button className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors">
-                  <span className="material-symbols-outlined text-sm">add</span>
-                  <span>Добавить</span>
-                </button>
+                <div className="flex gap-2">
+                  <button onClick={openAddBlockModal} className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors">
+                    <span className="material-symbols-outlined text-sm">add</span>
+                    <span>Добавить</span>
+                  </button>
+                  <button onClick={createBlocksFromAllBundles} disabled={bulkLoading} className="bg-white border border-primary-300 text-primary-600 hover:bg-primary-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors disabled:opacity-60">
+                    <span className="material-symbols-outlined text-sm">playlist_add</span>
+                    <span>{bulkLoading? 'Загружаю...' : 'Импорт всех связок'}</span>
+                  </button>
+                </div>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full" style={{ tableLayout: 'fixed' }}>
+        <table className="w-full" style={{ tableLayout: 'fixed' }}>
+                  <colgroup>
+          {/* Ширины столбцов берутся из calcColWidths (см. верх файла). Меняйте там числа — обновится таблица. */}
+                    <col style={{ width: calcColWidths.idx }} />
+                    <col style={{ width: calcColWidths.name }} />
+                    <col style={{ width: calcColWidths.image }} />
+                    <col style={{ width: calcColWidths.unit }} />
+                    <col style={{ width: calcColWidths.qty }} />
+                    <col style={{ width: calcColWidths.unitPrice }} />
+                    <col style={{ width: calcColWidths.mats }} />
+                    <col style={{ width: calcColWidths.labor }} />
+                    <col style={{ width: calcColWidths.actions }} />
+                  </colgroup>
                   <thead className="bg-gray-50 text-left">
                     <tr>
                       <th className="py-2 px-2 font-medium text-gray-500 text-sm">№</th>
@@ -527,67 +626,192 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    <>
-                      {/* Группа работ: Демонтаж и вложенные строки */}
-                      <tr className="bg-primary-50 font-bold text-gray-700">
-                        <td className="px-2 py-2 text-gray-800">2</td>
-                        <td className="px-2 py-2 text-gray-800" colSpan="8">2. Работы по стенам (Демонтаж)</td>
-                      </tr>
+                    {calcBlocks.length === 0 && (
                       <tr>
-                        <td className="px-2 py-2 text-gray-800">2.1</td>
-                        <td className="px-2 py-2 text-gray-800">Демонтаж стен из ПГП</td>
-                        <td className="px-2 py-2"><span className="bg-gray-100 rounded px-2 py-1 text-xs text-gray-800">40×24</span></td>
-                        <td className="px-2 py-2 text-gray-800">м2</td>
-                        <td className="px-2 py-2 text-gray-800">27,32</td>
-                        <td className="px-2 py-2 text-gray-800">325,00</td>
-                        <td className="px-2 py-2 text-gray-800">—</td>
-                        <td className="px-2 py-2 font-semibold text-right text-gray-800">8 878,35</td>
-                        <td className="px-2 py-2">
-                          <button className="bg-primary-50 text-primary-600 px-2 py-1 rounded text-xs mr-2">+ Материал</button>
-                          <button className="bg-primary-100 text-primary-700 px-2 py-1 rounded text-xs">В смету</button>
-                        </td>
+                        <td colSpan={9} className="px-4 py-6 text-center text-sm text-gray-400">Нет блоков. Нажмите «Добавить».</td>
                       </tr>
-                      <tr>
-                        <td className="px-2 py-2 text-gray-800">2.1</td>
-                        <td className="px-2 py-2 text-gray-800">Мешок для мусора 50 л 500×900 мм, зелёный</td>
-                        <td className="px-2 py-2"><span className="bg-green-100 rounded px-2 py-1 text-xs text-green-800">60×24</span></td>
-                        <td className="px-2 py-2 text-gray-800">шт</td>
-                        <td className="px-2 py-2 text-gray-800">76,18</td>
-                        <td className="px-2 py-2 text-gray-800">13,00</td>
-                        <td className="px-2 py-2 text-gray-800">990,29</td>
-                        <td className="px-2 py-2 text-gray-800">—</td>
-                        <td className="px-2 py-2"></td>
-                      </tr>
-                      <tr className="bg-gray-50 font-semibold">
-                        <td className="px-2 py-2 text-gray-800" colSpan="6">ИТОГО ЗА ДЕМОНТАЖНЫЕ РАБОТЫ ПО СТЕНАМ:</td>
-                        <td className="px-2 py-2 text-gray-800">990,29</td>
-                        <td className="px-2 py-2 text-primary-700">8 878,35</td>
-                        <td className="px-2 py-2 text-gray-800"></td>
-                      </tr>
-                      {/* Группа работ: Отделочные работы и вложенные строки */}
-                      <tr className="bg-primary-50 font-bold text-gray-700">
-                        <td className="px-2 py-2 text-gray-800">6</td>
-                        <td className="px-2 py-2 text-gray-800" colSpan="8">6. Работы по потолкам (Отделочные работы)</td>
-                      </tr>
-                      <tr>
-                        <td className="px-2 py-2 text-gray-800">6.3</td>
-                        <td className="px-2 py-2 text-gray-800">ГКЛ потолок</td>
-                        <td className="px-2 py-2 text-gray-800">—</td>
-                        <td className="px-2 py-2 text-gray-800">м2</td>
-                        <td className="px-2 py-2 text-gray-800">122,99</td>
-                        <td className="px-2 py-2 text-gray-800">1 300,00</td>
-                        <td className="px-2 py-2 text-gray-800">—</td>
-                        <td className="px-2 py-2 font-semibold text-right text-gray-800">159 887,00</td>
-                        <td className="px-2 py-2">
-                          <button className="bg-primary-50 text-primary-600 px-2 py-1 rounded text-xs mr-2">+ Материал</button>
-                          <button className="bg-primary-100 text-primary-700 px-2 py-1 rounded text-xs">В смету</button>
-                        </td>
-                      </tr>
-                    </>
+                    )}
+                    {(() => {
+                      // Сортировка и группировка как в справочнике: stage -> (works без substage) -> substages -> works
+                      const natural = (a,b)=> String(a||'').localeCompare(String(b||''),'ru',{numeric:true,sensitivity:'base'});
+                      const stagesMap = new Map();
+                      const orphan = [];
+                      for (const b of calcBlocks) {
+                        const st = b.work.stage_id || null;
+                        const ss = b.work.substage_id || null;
+                        if (!st) { orphan.push(b); continue; }
+                        if (!stagesMap.has(st)) stagesMap.set(st, { stage_id: st, stage_name: b.work.stage_name||st, works:[], substages: new Map() });
+                        const bucket = stagesMap.get(st);
+                        if (ss) {
+                          if (!bucket.substages.has(ss)) bucket.substages.set(ss, { substage_id:ss, substage_name: b.work.substage_name||ss, works:[] });
+                          bucket.substages.get(ss).works.push(b);
+                        } else {
+                          bucket.works.push(b);
+                        }
+                      }
+                      const stageKeys = Array.from(stagesMap.keys()).sort(natural);
+                      let rowIndex = 0; // выдаём порядковые номера
+                      const rows = [];
+                      for (const stId of stageKeys) {
+                        const stage = stagesMap.get(stId);
+                        const stageTitle = groupTitles[stId] || stage.stage_name || stId;
+                        rows.push(<tr key={'stage_'+stId} className="bg-primary-50 font-bold text-gray-700"><td className="px-2 py-2 text-gray-800">{stId}</td><td className="px-2 py-2 text-gray-800" colSpan={8}>{stageTitle}</td></tr>);
+                        // works without substage
+                        stage.works.sort((a,b)=> natural(a.work.code,b.work.code));
+                        for (const wb of stage.works) {
+                          const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
+                          const matsTotal = wb.materials.reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
+                          rows.push(renderWorkRow(wb, rowIndex, workSum, matsTotal));
+                        }
+                        // substages
+                        const subKeys = Array.from(stage.substages.keys()).sort(natural);
+                        for (const ssId of subKeys) {
+                          const ss = stage.substages.get(ssId);
+                          const subTitle = groupTitles[ssId] || ss.substage_name || ssId;
+                          rows.push(<tr key={'sub_'+stId+'_'+ssId} className="bg-purple-50 font-semibold text-gray-700"><td className="px-2 py-2 text-gray-800">{ssId}</td><td className="px-2 py-2 text-gray-800" colSpan={8}>{subTitle}</td></tr>);
+                          ss.works.sort((a,b)=> natural(a.work.code,b.work.code));
+                          for (const wb of ss.works) {
+                            const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
+                            const matsTotal = wb.materials.reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
+                            rows.push(renderWorkRow(wb, rowIndex, workSum, matsTotal));
+                          }
+                        }
+                      }
+                      if (orphan.length) {
+                        orphan.sort((a,b)=> natural(a.work.code,b.work.code));
+                        rows.push(<tr key='orph' className="bg-primary-50 font-bold text-gray-700"><td className="px-2 py-2 text-gray-800">—</td><td className="px-2 py-2 text-gray-800" colSpan={8}>Прочее</td></tr>);
+                        for (const wb of orphan) {
+                          const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
+                          const matsTotal = wb.materials.reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
+                          rows.push(renderWorkRow(wb, rowIndex, workSum, matsTotal));
+                        }
+                      }
+                      return rows;
+                    })()}
                   </tbody>
                 </table>
               </div>
             </div>
+            {/* Modal: add calc block */}
+            <FloatingWindow
+              open={addBlockModal}
+              onClose={()=> setAddBlockModal(false)}
+              title="Новый блок работ"
+              width={880}
+              center
+              overlay
+              persistKey="add-calc-block-modal"
+              footer={<>
+                <button onClick={()=> setAddBlockModal(false)} className="px-4 py-2 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50" disabled={creatingBlock}>Отмена</button>
+                <button onClick={createCalcBlock} disabled={creatingBlock} className="px-4 py-2 text-sm rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-60 disabled:cursor-default flex items-center gap-2">{creatingBlock && <span className="material-symbols-outlined animate-spin-slow text-base">progress_activity</span>}<span>{creatingBlock? 'Добавляю...' : 'Создать'}</span></button>
+              </>}
+            >
+              <div className="fw-form">
+                <div className="fw-block">
+                  <div className="fw-block-title">Выбор работы</div>
+                  <div className="space-y-3">
+                    <div className="fw-grid">
+                      <div className="fw-field fw-col-span-3">
+                        <label className="fw-label">Работа (код или часть названия)</label>
+                        <div className="fw-input-wrap relative">
+                          <input
+                            className="fw-input"
+                            placeholder="Например: 12-05 или Демонтаж"
+                            value={addBlockForm.work_input}
+                            onChange={e=> {
+                              const v = e.target.value;
+                              setAddBlockForm(f=> ({...f, work_input:v, resolvedWork: null}));
+                              setAddBlockError('');
+                              if (workSuggestTimer.current) clearTimeout(workSuggestTimer.current);
+                              if (v.trim().length < 2) { setWorkSuggestions([]); return; }
+                              workSuggestTimer.current = setTimeout(async () => {
+                                setWorkSearchLoading(true);
+                                try {
+                                  const data = await fetch(`/api/works-rows?q=${encodeURIComponent(v.trim())}`).then(r=> r.json());
+                                  const items = Array.isArray(data)? data: (data.items||[]);
+                                  const onlyWorks = items.filter(it => it.type==='item').slice(0,20).map(it => ({ id:it.code, name:it.name, unit:it.unit, unit_price:it.price }));
+                                  setWorkSuggestions(onlyWorks);
+                                  setWorkSuggestIndex(onlyWorks.length?0:-1);
+                                  // auto-resolve if exact code match
+                                  const exact = onlyWorks.find(w => w.id.toLowerCase() === v.trim().toLowerCase());
+                                  if (exact) setAddBlockForm(f=> ({...f, resolvedWork: exact, work_input: `${exact.id} — ${exact.name}`}));
+                                } catch { setWorkSuggestions([]);} finally { setWorkSearchLoading(false); }
+                              }, 300);
+                            }}
+                            onKeyDown={(e)=> {
+                              if (!workSuggestions.length) return;
+                              if (e.key==='ArrowDown') { e.preventDefault(); setWorkSuggestIndex(i=> (i+1)%workSuggestions.length); }
+                              else if (e.key==='ArrowUp') { e.preventDefault(); setWorkSuggestIndex(i=> (i<=0? workSuggestions.length-1 : i-1)); }
+                              else if (e.key==='Enter') {
+                                if (workSuggestIndex>=0 && workSuggestIndex<workSuggestions.length) {
+                                  const w = workSuggestions[workSuggestIndex];
+                                  setAddBlockForm(f=> ({...f, resolvedWork:w, work_input:`${w.id} — ${w.name}`}));
+                                  setWorkSuggestions([]);
+                                  setWorkSuggestIndex(-1);
+                                }
+                              } else if (e.key==='Escape') { setWorkSuggestions([]); setWorkSuggestIndex(-1); }
+                            }}
+                            onBlur={() => {
+                              // если пользователь ушёл и нет resolvedWork — не сбрасываем сразу, просто оставляем ввод
+                            }}
+                          />
+                          {workSearchLoading && <div className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400">поиск…</div>}
+                          {(!addBlockForm.resolvedWork) && (
+                            <div
+                              ref={suggestionListRef}
+                              className="absolute top-full left-0 right-0 mt-1 rounded-lg max-h-80 overflow-auto z-50"
+                              style={{ background:'rgba(255,255,255,0.92)', backdropFilter:'blur(4px)', boxSizing:'border-box' }}
+                            >
+                              {workSuggestions.length === 0 && addBlockForm.work_input.trim().length >= 2 && (
+                                <div className="fw-suggest-empty">Ничего не найдено</div>
+                              )}
+                              {workSuggestions.map((w, i) => {
+                                const q = (addBlockForm.work_input||'').trim().toLowerCase();
+                                const highlight = (txt) => {
+                                  if (!q || q.length<2) return txt;
+                                  const idx = txt.toLowerCase().indexOf(q);
+                                  if (idx===-1) return txt;
+                                  return (<>{txt.slice(0,idx)}<span className="bg-yellow-200 px-0.5 rounded-sm">{txt.slice(idx, idx+q.length)}</span>{txt.slice(idx+q.length)}</>);
+                                };
+                                return (
+                                  <button
+                                    key={w.id}
+                                    type="button"
+                                    data-suggest-row="1"
+                                    onMouseEnter={()=> setWorkSuggestIndex(i)}
+                                    onClick={()=> {
+                                      setAddBlockForm(f=> ({...f, resolvedWork:w, work_input:w.name}));
+                                      setWorkSuggestions([]); setWorkSuggestIndex(-1);
+                                    }}
+                                    className={"fw-suggest-item "+(i===workSuggestIndex? 'is-active':'')}
+                                  >
+                                    <span className="block text-gray-800">{highlight(w.name)}</span>
+                                  </button>
+                                );
+                              })}
+                              {/* Разделители между карточками (визуально одинаковая ширина) */}
+                              <style>{`.fw-input-wrap > div[ref='suggestionListRef'] button + button {margin-top:0}`}</style>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    {addBlockForm.resolvedWork && (
+                      <div className="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1 inline-flex items-center gap-2">
+                        <span className="material-symbols-outlined text-base">check_circle</span>
+                        <span>Выбрана работа: {addBlockForm.resolvedWork.id}</span>
+                        <button className="text-green-600 hover:underline" onClick={()=> setAddBlockForm(f=> ({...f, resolvedWork:null, work_input:''}))}>сменить</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="fw-block">
+                  <div className="fw-block-title">Материалы (норматив подтянется автоматически)</div>
+                  <div className="text-xs text-gray-500">После нажатия «Создать» материалы загрузятся из нормативной связки для выбранной работы. Если их нет — появится пустая строка.</div>
+                </div>
+                {addBlockError && <div className="fw-error fw-error-inline">{addBlockError}</div>}
+              </div>
+            </FloatingWindow>
              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="md:col-span-2 bg-white rounded-xl shadow-sm overflow-hidden">
                 <div className="p-4 border-b border-gray-200">
@@ -820,7 +1044,7 @@ export default function App() {
                 </div>
               )}
               <div className="overflow-x-auto">
-                <table className="w-full">
+                <table className="w-full" style={{ tableLayout:'fixed' }}>
                   <colgroup>
                     <col style={{ width: colWidths.code }} />
                     <col style={{ width: colWidths.name }} />
@@ -830,35 +1054,10 @@ export default function App() {
                   </colgroup>
                   <thead className="bg-gray-50 text-left">
                     <tr>
-            <th className="relative py-2 px-2 font-medium text-gray-500 text-sm select-none">
-                        Код
-                        <span
-              onMouseDown={startResize('code')}
-              onMouseEnter={() => setDrag((d) => d ? d : d)}
-              style={{ position: 'absolute', right: 0, top: 0, height: '100%', width: 6, cursor: 'col-resize', borderRight: '1px solid rgba(0,0,0,0.08)', backgroundColor: drag?.key==='code' ? 'rgba(115,65,255,0.2)' : 'transparent' }}
-                        />
-                      </th>
-            <th className="relative py-2 pl-1 pr-2 font-medium text-gray-500 text-sm select-none">
-                        Наименование
-                        <span
-              onMouseDown={startResize('name')}
-              style={{ position: 'absolute', right: 0, top: 0, height: '100%', width: 6, cursor: 'col-resize', borderRight: '1px solid rgba(0,0,0,0.08)', backgroundColor: drag?.key==='name' ? 'rgba(115,65,255,0.2)' : 'transparent' }}
-                        />
-                      </th>
-            <th className="relative py-2 px-2 font-medium text-gray-500 text-sm select-none">
-                        Ед.изм.
-                        <span
-              onMouseDown={startResize('unit')}
-              style={{ position: 'absolute', right: 0, top: 0, height: '100%', width: 6, cursor: 'col-resize', borderRight: '1px solid rgba(0,0,0,0.08)', backgroundColor: drag?.key==='unit' ? 'rgba(115,65,255,0.2)' : 'transparent' }}
-                        />
-                      </th>
-            <th className="relative py-2 px-2 font-medium text-gray-500 text-sm select-none">
-                        Цена руб.
-                        <span
-              onMouseDown={startResize('price')}
-              style={{ position: 'absolute', right: 0, top: 0, height: '100%', width: 6, cursor: 'col-resize', borderRight: '1px solid rgba(0,0,0,0.08)', backgroundColor: drag?.key==='price' ? 'rgba(115,65,255,0.2)' : 'transparent' }}
-                        />
-                      </th>
+                      <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Код</th>
+                      <th className="py-2 pl-1 pr-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
+                      <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Ед.изм.</th>
+                      <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Цена руб.</th>
                       <th className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
                     </tr>
                   </thead>
@@ -876,8 +1075,8 @@ export default function App() {
                       .map((w, i) => (
                       w.type === 'group' ? (
                         <tr key={`g-${i}`} className="bg-primary-50 font-bold text-gray-700">
-                          <td className="px-2 py-2 text-gray-800">
-                            <div className="flex items-center">
+                          <td className="px-2 py-2 text-gray-800" colSpan={5}>
+                            <div className="flex items-center gap-2">
                               <button
                                 className={`group-toggle-btn ${collapsed[w.code] ? 'collapsed' : ''}`}
                                 title={collapsed[w.code] ? 'Развернуть' : 'Свернуть'}
@@ -885,11 +1084,9 @@ export default function App() {
                               >
                                 <span className="material-symbols-outlined text-[18px] align-middle">{collapsed[w.code] ? 'chevron_right' : 'expand_more'}</span>
                               </button>
-                              <span>{w.code}</span>
+                              <span className="group-title-text">{w.title}</span>
+                              {w.code && <span className="text-xs font-normal text-gray-500">({w.code})</span>}
                             </div>
-                          </td>
-                          <td className="px-2 py-2 text-gray-800" colSpan={4}>
-                            <span className="group-title-text">{w.title}</span>
                           </td>
                         </tr>
                       ) : (
@@ -902,12 +1099,13 @@ export default function App() {
                               onChange={(e) => updateWork(w.code, 'code', e.target.value)}
                             />
                           </td>
-                          <td className="pl-1 pr-2 py-2 text-gray-800">
-                            <input
-                              className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
+                          <td className="pl-1 pr-2 py-2 text-gray-800 align-top" style={{whiteSpace:'normal', wordBreak:'break-word'}}>
+                            <textarea
+                              className="w-full bg-transparent py-1 px-2 text-sm resize-none leading-snug"
                               value={w.name}
                               placeholder="Наименование"
-                              onChange={(e) => updateWork(w.code, 'name', e.target.value)}
+                              onChange={(e) => { updateWork(w.code, 'name', e.target.value); autoGrow(e.target); }}
+                              ref={(el)=> el && autoGrow(el)}
                             />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
@@ -1044,17 +1242,28 @@ export default function App() {
                   </div>
                 )}
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full" style={{ tableLayout:'fixed' }}>
+                    <colgroup>
+                      <col style={{ width: materialsColWidths.id }} />
+                      <col style={{ width: materialsColWidths.name }} />
+                      <col style={{ width: materialsColWidths.unit }} />
+                      <col style={{ width: materialsColWidths.price }} />
+                      <col style={{ width: materialsColWidths.expenditure }} />
+                      <col style={{ width: materialsColWidths.weight }} />
+                      <col style={{ width: materialsColWidths.image }} />
+                      <col style={{ width: materialsColWidths.item }} />
+                      <col style={{ width: materialsColWidths.action }} />
+                    </colgroup>
                     <thead className="bg-gray-50 text-left">
                       <tr>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">ID</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Наименование</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Ед.</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Цена</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Расход</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Вес</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Изображение</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Item URL</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">ID</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Ед.</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Цена</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Расход</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Вес</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Изображение</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Item URL</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
                       </tr>
                     </thead>
@@ -1070,8 +1279,14 @@ export default function App() {
                               disabled={!m._isNew}
                             />
                           </td>
-                          <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.name||''} placeholder="Наименование" onChange={(e)=> updateMaterial(m._rowId,'name', e.target.value)} />
+                          <td className="px-2 py-2 text-gray-800 align-top" style={{whiteSpace:'normal', wordBreak:'break-word'}}>
+                            <textarea
+                              className="w-full bg-transparent py-1 px-2 text-sm resize-none leading-snug"
+                              value={m.name||''}
+                              placeholder="Наименование"
+                              onChange={(e)=> { updateMaterial(m._rowId,'name', e.target.value); autoGrow(e.target); }}
+                              ref={(el)=> el && autoGrow(el)}
+                            />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
                             <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.unit||''} placeholder="Ед." onChange={(e)=> updateMaterial(m._rowId,'unit', e.target.value)} />
@@ -1113,6 +1328,7 @@ export default function App() {
                               </div>
                             ) : (
                               <button
+
                                 className="text-xs text-primary-600 hover:underline"
                                 onClick={()=> {
                                   const url = prompt('Вставьте URL изображения','');
@@ -1185,5 +1401,79 @@ export default function App() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Рендер строки работы + её материалов (без групп-заголовков)
+function renderWorkRow(block, groupIndex, workSum, matsTotal) {
+  return (
+    <React.Fragment key={block.id}>
+  <tr style={{ height: calcRowHeights.work }}>
+  <td className="px-2 py-2 text-gray-800">{block.work.code}</td>
+        <td className="px-2 py-2 text-gray-800">
+          <input
+            value={block.work.name}
+            placeholder="Наименование работы"
+            onChange={(e)=> block._update && block._update(b=> ({...b, work:{...b.work, name:e.target.value}}))}
+            className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+          />
+        </td>
+  <td className="px-2 py-2"></td>
+    <td className="px-2 py-2 text-gray-800">
+          <input value={block.work.unit} placeholder="ед" onChange={(e)=> block._update && block._update(o=>({...o, work:{...o.work, unit:e.target.value}}))} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+        </td>
+    <td className="px-2 py-2 text-gray-800">
+          <input value={block.work.quantity} placeholder="0" onChange={(e)=> block._update && block._update(o=>({...o, work:{...o.work, quantity:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+        </td>
+    <td className="px-2 py-2 text-gray-800">
+          <input value={block.work.unit_price} placeholder="0" onChange={(e)=> block._update && block._update(o=>({...o, work:{...o.work, unit_price:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+        </td>
+        <td className="px-2 py-2 text-gray-800">—</td>
+        <td className="px-2 py-2 font-semibold text-right text-gray-800">{workSum ? workSum.toFixed(2) : '—'}</td>
+        <td className="px-2 py-2">
+          <button onClick={()=> block._update && block._update(o=>({...o, materials:[...o.materials, { name:'', unit:'', quantity:'', unit_price:'', total:'' }]}))} className="bg-primary-50 text-primary-600 px-2 py-1 rounded text-xs mr-2">+ Материал</button>
+        </td>
+      </tr>
+      {block.materials.map((m, mi) => {
+        const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
+        return (
+      <tr key={mi} style={{ height: calcRowHeights.material }}>
+            <td className="px-2 py-2 text-gray-800"></td>
+            <td className="px-2 py-2 text-gray-800">
+              <input value={m.name} placeholder="Материал" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+            </td>
+            <td className="px-2 py-2">
+              {m.image_url ? (
+                <img src={m.image_url} alt="img" className="rounded border object-cover" style={{width:36,height:24}} onError={(e)=>{e.currentTarget.style.display='none';}} />
+              ) : null}
+            </td>
+    <td className="px-2 py-2 text-gray-800">
+              <input value={m.unit} placeholder="ед" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+            </td>
+    <td className="px-2 py-2 text-gray-800">
+              <input value={m.quantity} placeholder="0" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+            </td>
+    <td className="px-2 py-2 text-gray-800">
+              <input value={m.unit_price} placeholder="0" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+            </td>
+            <td className="px-2 py-2 text-gray-800">{matSum? matSum.toFixed(2): '—'}</td>
+            <td className="px-2 py-2 text-gray-800">—</td>
+            <td className="px-2 py-2 text-right">
+              {block.materials.length>1 && (
+                <button onClick={()=> block._update && block._update(o=>({...o, materials: o.materials.filter((_,j)=> j!==mi)}))} className="text-gray-400 hover:text-red-600 text-xs">Удалить</button>
+              )}
+            </td>
+          </tr>
+        );
+      })}
+  <tr className="bg-gray-50 font-semibold" style={{ height: calcRowHeights.total }}>
+        <td className="px-2 py-2 text-gray-800" colSpan={6}>ИТОГО ПО ГРУППЕ:</td>
+        <td className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
+        <td className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
+        <td className="px-2 py-2 text-right">
+          <button onClick={()=> block._remove && block._remove(block.id)} className="text-gray-400 hover:text-red-600 text-xs">Удалить блок</button>
+        </td>
+      </tr>
+    </React.Fragment>
   );
 }

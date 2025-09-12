@@ -12,6 +12,7 @@
     "health": "node scripts/http_health.mjs",
     "import:http": "node scripts/http_import.mjs",
   "check:materials": "node server/check_materials.js",
+  "import:wm": "node server/import_work_materials_cli.js work_materials.strict.cleaned.csv",
     "dev:all": "concurrently -k -n VITE,API -c green,blue \"npm:dev\" \"npm:dev:api\"",
     "build": "vite build",
     "lint": "eslint .",
