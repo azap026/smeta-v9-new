@@ -1122,7 +1122,34 @@ export default function App() {
                             )}
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.item_url||''} placeholder="Item URL" onChange={(e)=> updateMaterial(m._rowId,'item_url', e.target.value)} />
+                            {m.item_url ? (
+                              <div className="flex items-center gap-2">
+                                <a
+                                  href={m.item_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center h-7 w-7 rounded hover:bg-primary-50 text-primary-600 hover:text-primary-700 transition-colors"
+                                  title={m.item_url}
+                                >
+                                  <span className="material-symbols-outlined text-base">open_in_new</span>
+                                </a>
+                                <button
+                                  className="text-xs text-gray-400 hover:text-red-600"
+                                  title="Убрать ссылку"
+                                  onClick={()=> updateMaterial(m._rowId,'item_url','')}
+                                >✕</button>
+                                <button
+                                  className="text-xs text-gray-500 hover:text-primary-600"
+                                  title="Изменить ссылку"
+                                  onClick={()=> { const v = prompt('Новый URL товара', m.item_url||''); if (v!=null) updateMaterial(m._rowId,'item_url', v.trim()); }}
+                                >изменить</button>
+                              </div>
+                            ) : (
+                              <button
+                                className="text-xs text-primary-600 hover:underline"
+                                onClick={()=> { const v = prompt('Введите URL на товар',''); if (v) updateMaterial(m._rowId,'item_url', v.trim()); }}
+                              >+ ссылка</button>
+                            )}
                           </td>
                           <td className="px-2 py-2 text-right">
                             <div className="flex items-center justify-end gap-1">
