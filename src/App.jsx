@@ -16,6 +16,35 @@ export const calcRowHeights = {
   material: 40,
   total: 36,
 };
+// Централизованные размеры превью изображений материалов
+// Меняйте здесь — обновятся все таблицы
+export const previewSizes = {
+  refMaterial:  { w: 28, h: 28, offsetX: 0,  offsetY: 0,  scale: 1 }, // Справочник материалов
+  calcMaterial: { w: 36, h: 36, offsetX: 20,  offsetY: -12,  scale: 1 }, // Таблица расчета
+  // Пример дополнительного профиля:
+  // summary: { w: 48, h: 48, offsetX: 100, offsetY: 100, scale: 1 }
+};
+// Подвинуть: меняйте offsetX / offsetY (в пикселях, могут быть отрицательными)
+// Масштаб: scale (например 0.9 или 1.2). Размер w/h задаёт контейнер, scale уменьшит/увеличит изображение внутри без ломки сетки.
+// ВНИМАНИЕ: смещение реализовано через CSS transform: translate(x,y) чтобы не ломать поток верстки и избежать влияния margin-collapse.
+export function getPreviewStyle(kind = 'refMaterial') {
+  const cfg = previewSizes[kind] || previewSizes.refMaterial;
+  const { w, h, offsetX = 40, offsetY = 10, scale = 1 } = cfg;
+  return {
+    width: w,
+    height: h,
+    minWidth: w,
+    minHeight: h,
+    maxWidth: w,
+    maxHeight: h,
+    display: 'block',
+  position: 'relative',
+  left: offsetX,
+  top: offsetY,
+  transform: scale !== 1 ? `scale(${scale})` : undefined,
+  transformOrigin: 'top left'
+  };
+}
 import AddWorkModal from './components/AddWorkModal.tsx';
 import { Label, Input, Button } from './components/ui/form';
 import FloatingWindow from './components/ui/FloatingWindow.jsx';
@@ -68,6 +97,93 @@ export default function App() {
   const materialsSearchDebounce = useRef(null);
   // ===== Calc template blocks (эталонные блоки) =====
   const [calcBlocks, setCalcBlocks] = useState([]); // [{id, groupName, work:{}, materials:[{}}]]
+  // Состояние сохранения сметы
+  const [estimateSaving, setEstimateSaving] = useState(false);
+  const [estimateSavedAt, setEstimateSavedAt] = useState(null); // Date
+  const estimateInitialLoad = useRef(false);
+  const estimateSaveTimer = useRef(null);
+
+  // Helper: преобразовать calcBlocks -> payload
+  function buildEstimatePayload() {
+    return {
+      code: 'current',
+      title: 'Текущая смета',
+      items: calcBlocks.map(b => ({
+        work_code: b.work.code || '',
+        work_name: b.work.name || b.work.code || '',
+        unit: b.work.unit || null,
+        quantity: b.work.quantity || '',
+        unit_price: b.work.unit_price || '',
+        stage_id: b.work.stage_id || null,
+        substage_id: b.work.substage_id || null,
+        materials: b.materials.map(m => ({
+          material_code: m.code || null,
+          material_name: m.name || m.code || '',
+            unit: m.unit || null,
+            quantity: m.quantity || '',
+            unit_price: m.unit_price || ''
+        }))
+      }))
+    };
+  }
+
+  // Загрузка сохранённой сметы при входе во вкладку calc (однократно за сессию)
+  useEffect(() => {
+    if (active !== 'calc') return;
+    let aborted = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/estimates/by-code/current/full');
+        const j = await r.json().catch(()=>({}));
+        if (!aborted && r.ok && j.ok && j.exists && j.estimate) {
+          const blocks = (j.estimate.items||[]).map(it => ({
+            id: 'est_'+it.work_code+'_'+Math.random().toString(36).slice(2),
+            groupName: '',
+            work: { code: it.work_code, name: it.work_name, unit: it.unit||'', quantity: it.quantity||'', unit_price: it.unit_price||'', labor_total:0, stage_id: it.stage_id, substage_id: it.substage_id },
+            materials: (it.materials||[]).map(m => ({
+              code: m.material_code || '',
+              name: m.material_name || m.material_code || '',
+              unit: m.unit || '',
+              quantity: m.quantity || '',
+              unit_price: m.unit_price || '',
+              image_url: m.image_url || '',
+              total: ''
+            }))
+          }));
+          estimateInitialLoad.current = true; // подавим автосейв ближайший цикл
+          setCalcBlocks(blocks);
+          setTimeout(()=> { estimateInitialLoad.current = false; }, 50);
+        }
+      } catch {}
+    })();
+    return () => { aborted = true; };
+  }, [active]);
+
+  // Автосохранение сметы (debounce 1000ms)
+  useEffect(() => {
+    if (estimateInitialLoad.current) return; // пропуск после загрузки
+    if (active !== 'calc') return;
+    if (estimateSaveTimer.current) clearTimeout(estimateSaveTimer.current);
+    estimateSaveTimer.current = setTimeout(async () => {
+      try {
+        setEstimateSaving(true);
+        const payload = buildEstimatePayload();
+        const r = await fetch('/api/estimates/by-code/current/full', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const j = await r.json().catch(()=>({}));
+        if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+        setEstimateSavedAt(new Date());
+      } catch (e) {
+        console.warn('Ошибка сохранения сметы:', e.message || e);
+      } finally {
+        setEstimateSaving(false);
+      }
+    }, 1000);
+    return () => { if (estimateSaveTimer.current) clearTimeout(estimateSaveTimer.current); };
+  }, [calcBlocks, active]);
   // Справочник названий для разделов/подразделов (по их id)
   const [groupTitles, setGroupTitles] = useState({}); // { stage_id: title }
   const [addBlockModal, setAddBlockModal] = useState(false);
@@ -596,6 +712,15 @@ export default function App() {
                     <span className="material-symbols-outlined text-sm">playlist_add</span>
                     <span>{bulkLoading? 'Загружаю...' : 'Импорт всех связок'}</span>
                   </button>
+                  <div className="flex items-center text-xs text-gray-500 ml-2">
+                    {estimateSaving ? (
+                      <span className="flex items-center gap-1"><span className="material-symbols-outlined animate-spin-slow text-base">progress_activity</span> Сохраняю…</span>
+                    ) : estimateSavedAt ? (
+                      <span className="flex items-center gap-1 text-green-600"><span className="material-symbols-outlined text-base">check_circle</span> Сохранено {estimateSavedAt.toLocaleTimeString()}</span>
+                    ) : (
+                      <span className="flex items-center gap-1 opacity-70"><span className="material-symbols-outlined text-base">info</span> Нет изменений</span>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="overflow-x-auto">
@@ -1308,7 +1433,7 @@ export default function App() {
                                     src={m.image_url}
                                     alt="preview"
                                     className="object-cover rounded border border-gray-200 bg-white group-hover:shadow"
-                                    style={{ width:28, height:28, minWidth:28, minHeight:28, maxWidth:28, maxHeight:28, display:'block' }}
+                                    style={getPreviewStyle('refMaterial')}
                                     onError={(e)=>{ e.currentTarget.style.display='none'; }}
                                   />
                                 </a>
@@ -1444,7 +1569,7 @@ function renderWorkRow(block, groupIndex, workSum, matsTotal) {
             </td>
             <td className="px-2 py-2">
               {m.image_url ? (
-                <img src={m.image_url} alt="img" className="rounded border object-cover" style={{width:36,height:24}} onError={(e)=>{e.currentTarget.style.display='none';}} />
+                <img src={m.image_url} alt="img" className="rounded border object-cover" style={getPreviewStyle('calcMaterial')} onError={(e)=>{e.currentTarget.style.display='none';}} />
               ) : null}
             </td>
     <td className="px-2 py-2 text-gray-800">

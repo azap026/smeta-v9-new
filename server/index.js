@@ -904,6 +904,119 @@ app.delete('/api/estimate-item-materials/:id', async (req,res) => {
   } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
 });
 
+// ========================= FULL ESTIMATE SNAPSHOT (load/save by code) =========================
+// Shape expected on save: { code, title?, items:[ {work_code, work_name, unit, quantity, unit_price, stage_id, substage_id, materials:[{ material_code, material_name, unit, quantity, unit_price }]} ] }
+// GET returns same structure (infers title from estimate row or code if absent)
+app.get('/api/estimates/by-code/:code/full', async (req,res) => {
+  const { code } = req.params;
+  if (!code) return res.status(400).json({ ok:false, error:'code required' });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const est = await client.query('select * from estimates where code=$1', [code]);
+    if (!est.rows.length) { await client.query('rollback'); return res.json({ ok:true, exists:false, estimate:null }); }
+    const estimate = est.rows[0];
+    const itemsR = await client.query('select * from estimate_items where estimate_id=$1 order by id', [estimate.id]);
+    const itemIds = itemsR.rows.map(r => r.id);
+    let materialsMap = new Map();
+    if (itemIds.length) {
+      const matsR = await client.query('select * from estimate_item_materials where estimate_item_id = any($1) order by id', [itemIds]);
+      for (const m of matsR.rows) {
+        if (!materialsMap.has(m.estimate_item_id)) materialsMap.set(m.estimate_item_id, []);
+        materialsMap.get(m.estimate_item_id).push({
+          material_code: m.material_code || m.material_id,
+          material_name: m.material_name,
+            unit: m.unit,
+            quantity: m.quantity==null? '': String(m.quantity),
+            unit_price: m.unit_price==null? '': String(m.unit_price)
+        });
+      }
+    }
+    const items = itemsR.rows.map(r => ({
+      work_code: r.work_code || r.work_id,
+      work_name: r.work_name,
+      unit: r.unit,
+      quantity: r.quantity==null? '': String(r.quantity),
+      unit_price: r.unit_price==null? '': String(r.unit_price),
+      stage_id: r.stage_id,
+      substage_id: r.substage_id,
+      materials: materialsMap.get(r.id) || []
+    }));
+    await client.query('commit');
+    res.json({ ok:true, exists:true, estimate:{ code: estimate.code, title: estimate.title, items } });
+  } catch (e) {
+    try { await client.query('rollback'); } catch {}
+    res.status(500).json({ ok:false, error:e.message });
+  } finally { client.release(); }
+});
+
+app.post('/api/estimates/by-code/:code/full', async (req,res) => {
+  const { code } = req.params;
+  const { title, items } = req.body || {};
+  if (!code) return res.status(400).json({ ok:false, error:'code required' });
+  if (!Array.isArray(items)) return res.status(400).json({ ok:false, error:'items array required' });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    // Upsert estimate by code
+    let est = await client.query('select * from estimates where code=$1', [code]);
+    if (!est.rows.length) {
+      const ins = await client.query('insert into estimates(code, title) values($1,$2) returning *', [code, title || code]);
+      est = { rows: ins.rows };
+    } else if (title && title !== est.rows[0].title) {
+      await client.query('update estimates set title=$2, updated_at=now() where code=$1', [code, title]);
+      est = await client.query('select * from estimates where code=$1', [code]);
+    }
+    const estimateId = est.rows[0].id;
+    // Remove existing snapshot
+    await client.query('delete from estimate_item_materials where estimate_item_id in (select id from estimate_items where estimate_id=$1)', [estimateId]);
+    await client.query('delete from estimate_items where estimate_id=$1', [estimateId]);
+    // Insert new items
+    for (let idx=0; idx<items.length; idx++) {
+      const it = items[idx];
+      const qtyNum = it.quantity===''||it.quantity==null? 0 : Number(String(it.quantity).replace(/,/g,'.'));
+      const upNum = it.unit_price===''||it.unit_price==null? null : Number(String(it.unit_price).replace(/,/g,'.'));
+      const insItem = await client.query(`insert into estimate_items(estimate_id, work_id, work_code, work_name, unit, quantity, unit_price, stage_id, substage_id, sort_order)
+        values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`, [
+        estimateId,
+        it.work_code || null,
+        it.work_code || null,
+        it.work_name || it.work_code || '',
+        it.unit || null,
+        qtyNum,
+        upNum,
+        it.stage_id || null,
+        it.substage_id || null,
+        idx
+      ]);
+      const itemId = insItem.rows[0].id;
+      if (Array.isArray(it.materials)) {
+        for (let mIdx=0; mIdx<it.materials.length; mIdx++) {
+          const m = it.materials[mIdx];
+          const mQty = m.quantity===''||m.quantity==null? null : Number(String(m.quantity).replace(/,/g,'.'));
+          const mUp = m.unit_price===''||m.unit_price==null? null : Number(String(m.unit_price).replace(/,/g,'.'));
+          await client.query(`insert into estimate_item_materials(estimate_item_id, material_id, material_code, material_name, unit, quantity, unit_price, sort_order)
+            values($1,$2,$3,$4,$5,$6,$7,$8)`, [
+            itemId,
+            m.material_code || null,
+            m.material_code || null,
+            m.material_name || m.material_code || '',
+            m.unit || null,
+            mQty,
+            mUp,
+            mIdx
+          ]);
+        }
+      }
+    }
+    await client.query('commit');
+    res.json({ ok:true, saved:true });
+  } catch (e) {
+    try { await client.query('rollback'); } catch {}
+    res.status(500).json({ ok:false, error:e.message }); }
+  finally { client.release(); }
+});
+
 const port = process.env.PORT || 4000;
 const host = process.env.HOST || '0.0.0.0';
 const srv = app.listen(port, host, () => {
