@@ -38,18 +38,17 @@ export default function App() {
   const expandAll = () => setCollapsed({});
   const [worksLoading, setWorksLoading] = useState(false);
   const [worksError, setWorksError] = useState('');
-  const [materials, setMaterials] = useState([
-    {
-      code: "M-001",
-      name: "Гипсокартон лист 12.5 мм",
-      price: "450.00",
-      imageUrl: "https://example.com/img/gkl.jpg",
-      productUrl: "https://example.com/product/gkl-125",
-      unit: "лист",
-      consumption: "1.00",
-      weight: "12.5"
-    }
-  ]);
+  // ===== Materials state =====
+  const MATERIALS_PAGE_SIZE = 70;
+  const [materials, setMaterials] = useState([]);
+  const [materialsPage, setMaterialsPage] = useState(1);
+  const [materialsHasMore, setMaterialsHasMore] = useState(false);
+  const [materialsTotal, setMaterialsTotal] = useState(0);
+  const [materialsSearch, setMaterialsSearch] = useState('');
+  const materialsSearchRef = useRef('');
+  const [materialsLoading, setMaterialsLoading] = useState(false);
+  const [materialsError, setMaterialsError] = useState('');
+  const materialsSearchDebounce = useRef(null);
   const [colWidths, setColWidths] = useState({ code: 90, name: 600, unit: 100, price: 140, action: 48 });
   const [drag, setDrag] = useState(null); // { key, startX, startWidth }
   const [uploading, setUploading] = useState(false);
@@ -263,12 +262,102 @@ export default function App() {
     }, 400);
     return () => { if (searchDebounce.current) clearTimeout(searchDebounce.current); };
   }, [worksSearch, active]);
-  const updateMaterial = (index, field, value) => {
-    setMaterials((prev) => prev.map((it, i) => (i === index ? { ...it, [field]: value } : it)));
+  const updateMaterial = (id, field, value) => {
+    setMaterials(prev => prev.map(m => (m._rowId === id ? { ...m, [field]: value, _dirty: true } : m)));
   };
-  const handleSaveMaterial = (index) => {
-    console.log('Save material row:', materials[index]);
+  // Создание новой строки материала (в конце списка, локально, потом сохранение)
+  const addMaterialRow = () => {
+    const tmpId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    setMaterials(prev => [...prev, { _rowId: tmpId, id: '', name: '', unit: '', unit_price: '', image_url: '', item_url: '', expenditure: '', weight: '', _isNew: true, _dirty: true }]);
   };
+  // Сохранение (upsert) всех грязных материалов debounce
+  const saveMaterialsTimer = useRef(null);
+  useEffect(() => {
+    if (!materials.some(m => m._dirty)) return;
+    if (saveMaterialsTimer.current) clearTimeout(saveMaterialsTimer.current);
+    saveMaterialsTimer.current = setTimeout(async () => {
+      const dirty = materials.filter(m => m._dirty);
+      for (const row of dirty) {
+        try {
+          if (!row.id || !row.name) continue; // минимальная валидация
+          const payload = {
+            id: row.id,
+            name: row.name,
+            unit: row.unit || null,
+            unit_price: row.unit_price === '' ? null : row.unit_price,
+            image_url: row.image_url || null,
+            item_url: row.item_url || null,
+            expenditure: row.expenditure === '' ? null : row.expenditure,
+            weight: row.weight === '' ? null : row.weight
+          };
+          const r = await fetch('/api/materials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          const j = await r.json().catch(()=>({}));
+          if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+          setMaterials(prev => prev.map(m => (m === row ? { ...m, ...j.material, _dirty:false, _isNew:false, _rowId: j.material.id } : m)));
+        } catch (e) {
+          console.warn('Material save error:', e.message || e);
+        }
+      }
+    }, 800);
+    return () => { if (saveMaterialsTimer.current) clearTimeout(saveMaterialsTimer.current); };
+  }, [materials]);
+
+  const deleteMaterial = async (mat) => {
+    if (!mat.id) { // локальная не сохранённая
+      setMaterials(prev => prev.filter(m => m !== mat));
+      return;
+    }
+    if (!confirm(`Удалить материал ${mat.id}?`)) return;
+    try {
+      const r = await fetch(`/api/materials/${encodeURIComponent(mat.id)}`, { method: 'DELETE' });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+      setMaterials(prev => prev.filter(m => m !== mat));
+    } catch (e) { alert('Ошибка удаления: ' + (e.message || e)); }
+  };
+
+  // Загрузка материалов при активации вкладки или смене страницы/поиска
+  useEffect(() => {
+    if (active !== 'materials') return;
+    let aborted = false;
+    (async () => {
+      try {
+        setMaterialsLoading(true); setMaterialsError('');
+        const qParam = materialsSearch ? `&q=${encodeURIComponent(materialsSearch)}` : '';
+        const params = `?page=${materialsPage}&limit=${MATERIALS_PAGE_SIZE}${qParam}`;
+        const data = await fetchJsonTry([
+          `/api/materials${params}`,
+          `http://localhost:4000/api/materials${params}`,
+          `http://127.0.0.1:4000/api/materials${params}`,
+        ]);
+        if (!aborted) {
+          if (materialsPage === 1) {
+            setMaterials((data.items || []).map(it => ({ ...it, _rowId: it.id })));
+          } else {
+            setMaterials(prev => [...prev, ...(data.items || []).map(it => ({ ...it, _rowId: it.id }))]);
+          }
+          setMaterialsTotal(data.total || 0);
+          setMaterialsHasMore(!!data.hasMore);
+        }
+      } catch (e) {
+        if (!aborted) setMaterialsError(e.message || 'Ошибка загрузки материалов');
+      } finally {
+        if (!aborted) setMaterialsLoading(false);
+      }
+    })();
+    return () => { aborted = true; };
+  }, [active, materialsPage, materialsSearch]);
+
+  // Debounce поиска материалов
+  useEffect(() => {
+    if (active !== 'materials') return;
+    if (materialsSearchDebounce.current) clearTimeout(materialsSearchDebounce.current);
+    materialsSearchDebounce.current = setTimeout(() => {
+      materialsSearchRef.current = materialsSearch;
+      setMaterialsPage(1);
+    }, 400);
+    return () => { if (materialsSearchDebounce.current) clearTimeout(materialsSearchDebounce.current); };
+  }, [materialsSearch, active]);
   return (
     <div id="webcrumbs"> 
       <div className="min-h-screen bg-gray-50 font-sans flex">
@@ -876,74 +965,160 @@ export default function App() {
             </div>
             ) : (
               <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-                <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+                <div className="p-4 border-b border-gray-200 flex flex-wrap gap-2 items-center justify-between">
                   <h2 className="font-semibold text-lg">Справочник материалов</h2>
-                  <button
-                    className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setMaterials((prev) => [
-                        ...prev,
-                        { code: "", name: "", price: "", imageUrl: "", productUrl: "", unit: "", consumption: "", weight: "" }
-                      ]);
-                    }}
-                  >
-                    <span className="material-symbols-outlined text-sm">add</span>
-                    <span>Добавить материал</span>
-                  </button>
+                  <div className="flex gap-2 items-center flex-wrap ml-auto">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={materialsSearch}
+                        onChange={(e) => setMaterialsSearch(e.target.value)}
+                        placeholder="Поиск (код / имя)"
+                        className="pl-8 pr-2 py-1 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                        style={{ minWidth: 220 }}
+                      />
+                      <span className="material-symbols-outlined text-gray-400 absolute left-2 top-1/2 -translate-y-1/2 text-base">search</span>
+                      {materialsSearch && (
+                        <button
+                          className="absolute right-1 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          onClick={() => setMaterialsSearch('')}
+                          title="Очистить"
+                        >
+                          <span className="material-symbols-outlined text-sm">close</span>
+                        </button>
+                      )}
+                    </div>
+                    <label className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors cursor-pointer">
+                      <input type="file" accept=".csv" className="hidden" onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        const fd = new FormData();
+                        fd.append('file', f);
+                        try {
+                          const r = await fetch('/api/admin/import-materials', { method: 'POST', body: fd });
+                          const j = await r.json();
+                          if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+                          alert(`Импорт материалов: ${j.imported} строк\nДобавлено: ${j.insertedMaterials}\nОбновлено: ${j.updatedMaterials}\nПропущено: ${j.skippedRows}`);
+                          setMaterialsPage(1); // перезагрузим
+                        } catch (err) { alert('Ошибка импорта: '+(err.message||err)); } finally { e.target.value=''; }
+                      }} />
+                      <span className="material-symbols-outlined text-sm">upload_file</span>
+                      <span>Импорт CSV</span>
+                    </label>
+                    <button
+                      className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        try {
+                          const r = await fetch('/api/admin/export-materials');
+                          if (!r.ok) throw new Error('HTTP '+r.status);
+                          const blob = await r.blob();
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url; a.download = 'materials_export.csv';
+                          document.body.appendChild(a); a.click(); a.remove();
+                          setTimeout(()=>URL.revokeObjectURL(url), 2000);
+                        } catch (err) { alert('Ошибка экспорта: '+(err.message||err)); }
+                      }}
+                    >
+                      <span className="material-symbols-outlined text-sm">download</span>
+                      <span>Экспорт CSV</span>
+                    </button>
+                    <button
+                      className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
+                      onClick={(e) => { e.preventDefault(); addMaterialRow(); }}
+                    >
+                      <span className="material-symbols-outlined text-sm">add</span>
+                      <span>Добавить</span>
+                    </button>
+                  </div>
                 </div>
+                {materialsLoading && (<div className="p-3 text-sm text-gray-500">Загрузка…</div>)}
+                {materialsError && (
+                  <div className="p-3 text-sm text-red-600 flex items-center gap-3">
+                    <span>{materialsError}</span>
+                    <button
+                      className="px-2 py-1 text-xs rounded bg-red-50 text-red-700 hover:bg-red-100"
+                      onClick={() => { setMaterials([]); setTimeout(()=>setMaterialsPage(1)); }}
+                    >Повторить</button>
+                  </div>
+                )}
                 <div className="overflow-x-auto">
                   <table className="w-full">
                     <thead className="bg-gray-50 text-left">
                       <tr>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Код</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">ID</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm">Наименование</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Ед.</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm">Цена</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">URL Изображения</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">URL на товар</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Ед. изм.</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Расход на ед.</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Расход</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm">Вес</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Image URL</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Item URL</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
-                      {materials.map((m, i) => (
-                        <tr key={`m-${i}`}>
+                      {materials.map(m => (
+                        <tr key={m._rowId} className={m._isNew ? 'bg-yellow-50' : ''}>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.code} placeholder="Код" onChange={(e) => updateMaterial(i, 'code', e.target.value)} />
+                            <input
+                              className="w-full bg-transparent py-1 px-2 text-sm"
+                              value={m.id}
+                              placeholder="ID"
+                              onChange={(e)=> updateMaterial(m._rowId,'id', e.target.value)}
+                              disabled={!m._isNew}
+                            />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.name} placeholder="Наименование" onChange={(e) => updateMaterial(i, 'name', e.target.value)} />
+                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.name||''} placeholder="Наименование" onChange={(e)=> updateMaterial(m._rowId,'name', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.price} placeholder="Цена" onChange={(e) => updateMaterial(i, 'price', e.target.value)} />
+                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.unit||''} placeholder="Ед." onChange={(e)=> updateMaterial(m._rowId,'unit', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.imageUrl} placeholder="URL Изображения" onChange={(e) => updateMaterial(i, 'imageUrl', e.target.value)} />
+                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.unit_price??''} placeholder="Цена" onChange={(e)=> updateMaterial(m._rowId,'unit_price', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.productUrl} placeholder="URL на товар" onChange={(e) => updateMaterial(i, 'productUrl', e.target.value)} />
+                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.expenditure??''} placeholder="Расход" onChange={(e)=> updateMaterial(m._rowId,'expenditure', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.unit} placeholder="Ед. изм." onChange={(e) => updateMaterial(i, 'unit', e.target.value)} />
+                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.weight??''} placeholder="Вес" onChange={(e)=> updateMaterial(m._rowId,'weight', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.consumption} placeholder="Расход на ед." onChange={(e) => updateMaterial(i, 'consumption', e.target.value)} />
+                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.image_url||''} placeholder="Image URL" onChange={(e)=> updateMaterial(m._rowId,'image_url', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm focus:outline-none focus:ring-0" value={m.weight} placeholder="Вес" onChange={(e) => updateMaterial(i, 'weight', e.target.value)} />
+                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.item_url||''} placeholder="Item URL" onChange={(e)=> updateMaterial(m._rowId,'item_url', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-right">
-                            <button className="text-primary-600 hover:text-primary-700 p-1" title="Сохранить" onClick={() => handleSaveMaterial(i)}>
-                              <span className="material-symbols-outlined">check</span>
-                            </button>
+                            <div className="flex items-center justify-end gap-1">
+                              {m._dirty && (<span className="material-symbols-outlined text-yellow-600 animate-pulse" title="Изменения сохраняются">hourglass_empty</span>)}
+                              <button className="text-gray-500 hover:text-red-600 p-1" title="Удалить" onClick={()=> deleteMaterial(m)}>
+                                <span className="material-symbols-outlined">delete</span>
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+                {materialsHasMore && (
+                  <div className="p-4 flex items-center justify-center border-t border-gray-100">
+                    <button
+                      className="px-6 py-2.5 rounded-lg text-sm font-medium bg-primary-50 text-primary-700 border border-primary-200 hover:bg-primary-100 disabled:opacity-50 shadow-sm flex items-center justify-center gap-2 transition-colors"
+                      style={{ minWidth: 240 }}
+                      disabled={materialsLoading}
+                      onClick={() => setMaterialsPage(p => p + 1)}
+                    >
+                      {materialsLoading && (
+                        <span className="material-symbols-outlined text-base animate-spin-slow" style={{fontSize:16}}>progress_activity</span>
+                      )}
+                      <span>{materialsLoading ? 'Загрузка…' : `Показать ещё ${MATERIALS_PAGE_SIZE} строк`}</span>
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

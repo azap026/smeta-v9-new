@@ -11,6 +11,7 @@
     "import:bdwm": "node server/import_bdwm.js",
     "health": "node scripts/http_health.mjs",
     "import:http": "node scripts/http_import.mjs",
+  "check:materials": "node server/check_materials.js",
     "dev:all": "concurrently -k -n VITE,API -c green,blue \"npm:dev\" \"npm:dev:api\"",
     "build": "vite build",
     "lint": "eslint .",

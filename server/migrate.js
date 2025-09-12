@@ -76,9 +76,40 @@ create index if not exists idx_stages_phase on stages(phase_id);
 create index if not exists idx_substages_stage on substages(stage_id);
 create index if not exists idx_worksref_stage on works_ref(stage_id);
 create index if not exists idx_worksref_substage on works_ref(substage_id);
+
+-- Materials reference (from BDM CSV)
+create table if not exists materials (
+  id text primary key,
+  name text not null,
+  image_url text,
+  item_url text,
+  unit text,
+  unit_price numeric(14,2),
+  expenditure numeric(14,6), -- нормативный расход (если применимо)
+  weight numeric(14,3),       -- масса одного юнита
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists idx_materials_name on materials using gin (to_tsvector('simple', name));
 `;
 
 (async () => {
+  if (!RAW_URL) {
+    console.error('❌ DATABASE_URL не задан. Создайте .env с реальной строкой подключения. Пример:');
+    console.error('DATABASE_URL=postgres://USER:PASSWORD@host:5432/dbname');
+    process.exitCode = 1;
+    return;
+  }
+  if (/user:pass@localhost/.test(RAW_URL)) {
+    console.error('❌ DATABASE_URL все ещё содержит placeholder user:pass. Миграция не запущена, чтобы не писать в тестовую БД.');
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const u = new URL(CONNECTION_URL);
+    console.log('→ Применяю миграции к БД:', `${u.hostname}:${u.port || '5432'}/${u.pathname.replace(/^\//,'')}`);
+  } catch {}
   const client = await pool.connect();
   try {
     await client.query('begin');

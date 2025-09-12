@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { importFromCsv } from './importer.js';
+import { importMaterialsCsv } from './import_materials.js';
 const { Pool } = pkg;
 
 dotenv.config();
@@ -195,9 +196,9 @@ app.get('/api/works-rows', async (req, res) => {
 // quick debug endpoint
 app.get('/api/debug-counts', async (req, res) => {
   try {
-    const q = async (t) => (await pool.query(`select count(*)::int as c from ${t}`)).rows[0].c;
-    const [ph, st, ss, wr] = await Promise.all(['phases','stages','substages','works_ref'].map(q));
-    res.json({ phases: ph, stages: st, substages: ss, works_ref: wr });
+  const q = async (t) => (await pool.query(`select count(*)::int as c from ${t}`)).rows[0].c;
+  const [ph, st, ss, wr, mt] = await Promise.all(['phases','stages','substages','works_ref','materials'].map(q));
+  res.json({ phases: ph, stages: st, substages: ss, works_ref: wr, materials: mt });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -217,6 +218,112 @@ app.post('/api/admin/clear', async (req, res) => {
     client.release();
   }
 });
+
+// ===== Materials API =====
+// List materials with optional search & pagination
+app.get('/api/materials', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limitRaw = parseInt(req.query.limit) || 70;
+    const limit = Math.min(100, Math.max(1, limitRaw));
+    const qRaw = (req.query.q || '').toString().trim();
+    const args = [];
+    let where = '';
+    if (qRaw) {
+      args.push('%' + qRaw.toLowerCase() + '%');
+      where = 'where lower(id) like $1 or lower(name) like $1';
+    }
+    const offset = (page - 1) * limit;
+    const { rows } = await pool.query(`select * from materials ${where} order by id limit ${limit} offset ${offset}`, args);
+    const total = (await pool.query(`select count(*)::int as c from materials ${where}`, args)).rows[0].c;
+    res.json({ items: rows, page, limit, total, hasMore: offset + rows.length < total, q: qRaw || undefined });
+  } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+// Get single material
+app.get('/api/materials/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from materials where id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+// Create/update (upsert) material
+app.post('/api/materials', async (req, res) => {
+  const { id, name, image_url, item_url, unit, unit_price, expenditure, weight } = req.body || {};
+  if (!id || !name) return res.status(400).json({ ok:false, error:'id and name required' });
+  try {
+    const priceNum = unit_price===''||unit_price==null?null:Number(String(unit_price).replace(/\s+/g,'' ).replace(/,/g,'.'));
+    const expNum = expenditure===''||expenditure==null?null:Number(String(expenditure).replace(/\s+/g,'' ).replace(/,/g,'.'));
+    const weightNum = weight===''||weight==null?null:Number(String(weight).replace(/\s+/g,'' ).replace(/,/g,'.'));
+    await pool.query(`insert into materials(id,name,image_url,item_url,unit,unit_price,expenditure,weight)
+      values($1,$2,$3,$4,$5,$6,$7,$8)
+      on conflict (id) do update set name=excluded.name, image_url=excluded.image_url, item_url=excluded.item_url, unit=excluded.unit, unit_price=excluded.unit_price, expenditure=excluded.expenditure, weight=excluded.weight, updated_at=now()`,
+      [id,name,image_url||null,item_url||null,unit||null,priceNum,expNum,weightNum]);
+    const { rows } = await pool.query('select * from materials where id=$1', [id]);
+    res.status(201).json({ ok:true, material: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+// Patch material
+app.patch('/api/materials/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, image_url, item_url, unit, unit_price, expenditure, weight, new_id } = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    let currentId = id;
+    if (new_id && new_id !== id) {
+      const dup = await client.query('select 1 from materials where id=$1', [new_id]);
+      if (dup.rows.length) { await client.query('rollback'); return res.status(409).json({ ok:false, error:'new_id exists' }); }
+      await client.query('update materials set id=$1 where id=$2', [new_id, id]);
+      currentId = new_id;
+    }
+    const sets = [];
+    const args = [];
+    if (name !== undefined) { args.push(name); sets.push(`name=$${args.length}`); }
+    if (image_url !== undefined) { args.push(image_url||null); sets.push(`image_url=$${args.length}`); }
+    if (item_url !== undefined) { args.push(item_url||null); sets.push(`item_url=$${args.length}`); }
+    if (unit !== undefined) { args.push(unit||null); sets.push(`unit=$${args.length}`); }
+    if (unit_price !== undefined) { const v=unit_price===''||unit_price==null?null:Number(String(unit_price).replace(/\s+/g,'' ).replace(/,/g,'.')); args.push(v); sets.push(`unit_price=$${args.length}`); }
+    if (expenditure !== undefined) { const v=expenditure===''||expenditure==null?null:Number(String(expenditure).replace(/\s+/g,'' ).replace(/,/g,'.')); args.push(v); sets.push(`expenditure=$${args.length}`); }
+    if (weight !== undefined) { const v=weight===''||weight==null?null:Number(String(weight).replace(/\s+/g,'' ).replace(/,/g,'.')); args.push(v); sets.push(`weight=$${args.length}`); }
+    if (sets.length) {
+      args.push(currentId);
+      await client.query(`update materials set ${sets.join(', ')}, updated_at=now() where id=$${args.length}`, args);
+    }
+    const { rows } = await client.query('select * from materials where id=$1', [currentId]);
+    await client.query('commit');
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, material: rows[0] });
+  } catch (e) {
+    await client.query('rollback');
+    res.status(500).json({ ok:false, error: e.message });
+  } finally { client.release(); }
+});
+// Delete material
+app.delete('/api/materials/:id', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('delete from materials where id=$1', [req.params.id]);
+    if (!rowCount) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, deleted:true, id: req.params.id });
+  } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+
+// Export materials CSV
+app.get('/api/admin/export-materials', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from materials order by id');
+    const headers = ['material_id','material_name','image_url','item_url','unit','unit_price','expenditure','weight'];
+    const esc = (v) => { if (v==null) return ''; const s=String(v); return /[";\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    let csv = headers.join(';')+'\n';
+    for (const r of rows) {
+      csv += [r.id,r.name,r.image_url,r.item_url,r.unit,r.unit_price,r.expenditure,r.weight].map(esc).join(';')+'\n';
+    }
+    res.setHeader('Content-Type','text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="materials_'+new Date().toISOString().slice(0,10)+'.csv"');
+    res.send('\uFEFF'+csv);
+  } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+
 
 // Admin: import CSV via multipart/form-data (field name: file)
 app.post('/api/admin/import', upload.single('file'), async (req, res) => {
@@ -243,6 +350,24 @@ app.post('/api/admin/import', upload.single('file'), async (req, res) => {
     console.error('Import endpoint error:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
+});
+
+// Import materials CSV (multipart form-data: file)
+app.post('/api/admin/import-materials', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok:false, error:'No file uploaded' });
+    const tmpPath = req.file.path;
+    const client = await pool.connect();
+    try {
+      const stats = await importMaterialsCsv(tmpPath, client);
+      res.json({ ok:true, type:'materials', ...stats });
+    } catch (e) {
+      res.status(500).json({ ok:false, error:e.message });
+    } finally {
+      client.release();
+      fs.unlink(tmpPath, ()=>{});
+    }
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
 });
 
 // Admin: upsert a single work reference with optional phase/stage/substage
