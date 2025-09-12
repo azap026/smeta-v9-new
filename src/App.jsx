@@ -1053,7 +1053,7 @@ export default function App() {
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm">Цена</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm">Расход</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm">Вес</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Image URL</th>
+                        <th className="py-2 px-2 font-medium text-gray-500 text-sm">Изображение</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm">Item URL</th>
                         <th className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
                       </tr>
@@ -1086,7 +1086,39 @@ export default function App() {
                             <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.weight??''} placeholder="Вес" onChange={(e)=> updateMaterial(m._rowId,'weight', e.target.value)} />
                           </td>
                           <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.image_url||''} placeholder="Image URL" onChange={(e)=> updateMaterial(m._rowId,'image_url', e.target.value)} />
+                            {m.image_url ? (
+                              <div className="flex items-center gap-2">
+                                <a href={m.image_url} target="_blank" rel="noopener noreferrer" className="block group">
+                                  <img
+                                    src={m.image_url}
+                                    alt="preview"
+                                    className="h-10 w-10 object-cover rounded border border-gray-200 bg-white group-hover:shadow"
+                                    onError={(e)=>{ e.currentTarget.style.display='none'; }}
+                                  />
+                                </a>
+                                <button
+                                  className="text-xs text-gray-400 hover:text-red-600"
+                                  title="Убрать изображение"
+                                  onClick={()=> updateMaterial(m._rowId,'image_url','')}
+                                >✕</button>
+                                <button
+                                  className="text-xs text-gray-500 hover:text-primary-600"
+                                  title="Заменить URL"
+                                  onClick={()=> {
+                                    const url = prompt('Новый URL изображения', m.image_url || '');
+                                    if (url != null) updateMaterial(m._rowId,'image_url', url.trim());
+                                  }}
+                                >изменить</button>
+                              </div>
+                            ) : (
+                              <button
+                                className="text-xs text-primary-600 hover:underline"
+                                onClick={()=> {
+                                  const url = prompt('Вставьте URL изображения','');
+                                  if (url != null) updateMaterial(m._rowId,'image_url', url.trim());
+                                }}
+                              >+ изображение</button>
+                            )}
                           </td>
                           <td className="px-2 py-2 text-gray-800">
                             <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.item_url||''} placeholder="Item URL" onChange={(e)=> updateMaterial(m._rowId,'item_url', e.target.value)} />
