@@ -921,15 +921,24 @@ app.get('/api/estimates/by-code/:code/full', async (req,res) => {
     const itemIds = itemsR.rows.map(r => r.id);
     let materialsMap = new Map();
     if (itemIds.length) {
-      const matsR = await client.query('select * from estimate_item_materials where estimate_item_id = any($1) order by id', [itemIds]);
+      // Протягиваем image_url из справочника материалов по material_code
+      const matsR = await client.query(
+        `select eim.*, mt.image_url as material_image_url
+         from estimate_item_materials eim
+         left join materials mt on mt.id = eim.material_code
+         where eim.estimate_item_id = any($1)
+         order by eim.id`,
+        [itemIds]
+      );
       for (const m of matsR.rows) {
         if (!materialsMap.has(m.estimate_item_id)) materialsMap.set(m.estimate_item_id, []);
         materialsMap.get(m.estimate_item_id).push({
           material_code: m.material_code || m.material_id,
           material_name: m.material_name,
-            unit: m.unit,
-            quantity: m.quantity==null? '': String(m.quantity),
-            unit_price: m.unit_price==null? '': String(m.unit_price)
+          unit: m.unit,
+          quantity: m.quantity == null ? '' : String(m.quantity),
+          unit_price: m.unit_price == null ? '' : String(m.unit_price),
+          image_url: m.material_image_url || ''
         });
       }
     }
@@ -953,7 +962,7 @@ app.get('/api/estimates/by-code/:code/full', async (req,res) => {
 
 app.post('/api/estimates/by-code/:code/full', async (req,res) => {
   const { code } = req.params;
-  const { title, items } = req.body || {};
+  const { title, items, clear } = req.body || {};
   if (!code) return res.status(400).json({ ok:false, error:'code required' });
   if (!Array.isArray(items)) return res.status(400).json({ ok:false, error:'items array required' });
   const client = await pool.connect();
@@ -969,6 +978,11 @@ app.post('/api/estimates/by-code/:code/full', async (req,res) => {
       est = await client.query('select * from estimates where code=$1', [code]);
     }
     const estimateId = est.rows[0].id;
+    // Safeguard: ignore empty snapshot if estimate already exists and no explicit clear requested
+    if (!clear && est.rows.length && items.length === 0) {
+      await client.query('rollback');
+      return res.json({ ok:true, ignored:true, reason:'empty items snapshot ignored' });
+    }
     // Remove existing snapshot
     await client.query('delete from estimate_item_materials where estimate_item_id in (select id from estimate_items where estimate_id=$1)', [estimateId]);
     await client.query('delete from estimate_items where estimate_id=$1', [estimateId]);

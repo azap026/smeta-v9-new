@@ -19,7 +19,7 @@ export const calcRowHeights = {
 // Централизованные размеры превью изображений материалов
 // Меняйте здесь — обновятся все таблицы
 export const previewSizes = {
-  refMaterial:  { w: 28, h: 28, offsetX: 0,  offsetY: 0,  scale: 1 }, // Справочник материалов
+  refMaterial:  { w: 28, h: 28, offsetX: 20,  offsetY: 0,  scale: 1 }, // Справочник материалов
   calcMaterial: { w: 36, h: 36, offsetX: 20,  offsetY: -12,  scale: 1 }, // Таблица расчета
   // Пример дополнительного профиля:
   // summary: { w: 48, h: 48, offsetX: 100, offsetY: 100, scale: 1 }
@@ -50,7 +50,10 @@ import { Label, Input, Button } from './components/ui/form';
 import FloatingWindow from './components/ui/FloatingWindow.jsx';
 
 export default function App() {
-  const [active, setActive] = useState("calc"); // calc | works | materials
+  // Активная вкладка: читаем из localStorage, по умолчанию 'calc'
+  const [active, setActive] = useState(() => {
+    try { return localStorage.getItem('activeTab') || 'calc'; } catch { return 'calc'; }
+  }); // calc | works | materials
   const [works, setWorks] = useState([]);
   const WORKS_PAGE_SIZE = 70;
   const [worksPage, setWorksPage] = useState(1); // текущая страница (для запроса)
@@ -60,6 +63,11 @@ export default function App() {
   const worksSearchRef = useRef(''); // актуальная применённая строка (для отмены гонок)
   const searchDebounce = useRef(null);
   const [collapsed, setCollapsed] = useState({}); // { [groupCode]: boolean }
+
+  // Сохраняем активную вкладку между перезагрузками/горячими заменами
+  useEffect(() => {
+    try { localStorage.setItem('activeTab', active); } catch {}
+  }, [active]);
 
   // Persist collapsed state per user
   useEffect(() => {
@@ -173,6 +181,9 @@ export default function App() {
   // Загрузка сохранённой сметы при входе во вкладку calc (однократно за сессию)
   useEffect(() => {
     if (active !== 'calc') return;
+    // Блокируем автосейв на время первичной загрузки снимка,
+    // чтобы исключить отправку пустого снимка до прихода данных
+    estimateInitialLoad.current = true;
     let aborted = false;
     (async () => {
       try {
@@ -193,20 +204,24 @@ export default function App() {
               total: ''
             }))
           }));
-          estimateInitialLoad.current = true; // подавим автосейв ближайший цикл
           setCalcBlocks(blocks);
-          setTimeout(()=> { estimateInitialLoad.current = false; }, 50);
         }
       } catch {}
+      finally {
+        // Снимем блокировку спустя микротакт, чтобы debounce мог работать дальше
+        setTimeout(()=> { estimateInitialLoad.current = false; }, 50);
+      }
     })();
     return () => { aborted = true; };
   }, [active]);
 
   // Автосохранение сметы (debounce 1000ms)
   useEffect(() => {
-    if (estimateInitialLoad.current) return; // пропуск после загрузки
-    if (active !== 'calc') return;
-    if (estimateSaveTimer.current) clearTimeout(estimateSaveTimer.current);
+  // Всегда сносим прежний таймер перед любыми ранними выходами,
+  // чтобы не ушёл старый пустой снимок
+  if (estimateSaveTimer.current) { clearTimeout(estimateSaveTimer.current); estimateSaveTimer.current = null; }
+  if (estimateInitialLoad.current) return; // пропуск после загрузки
+  if (active !== 'calc') return;
     estimateSaveTimer.current = setTimeout(async () => {
       try {
         setEstimateSaving(true);
@@ -225,7 +240,7 @@ export default function App() {
         setEstimateSaving(false);
       }
     }, 1000);
-    return () => { if (estimateSaveTimer.current) clearTimeout(estimateSaveTimer.current); };
+  return () => { if (estimateSaveTimer.current) { clearTimeout(estimateSaveTimer.current); estimateSaveTimer.current = null; } };
   }, [calcBlocks, active]);
   // Справочник названий для разделов/подразделов (по их id)
   const [groupTitles, setGroupTitles] = useState({}); // { stage_id: title }
@@ -1486,19 +1501,7 @@ export default function App() {
                                     onError={(e)=>{ e.currentTarget.style.display='none'; }}
                                   />
                                 </a>
-                                <button
-                                  className="text-xs text-gray-400 hover:text-red-600"
-                                  title="Убрать изображение"
-                                  onClick={()=> updateMaterial(m._rowId,'image_url','')}
-                                >✕</button>
-                                <button
-                                  className="text-xs text-gray-500 hover:text-primary-600"
-                                  title="Заменить URL"
-                                  onClick={()=> {
-                                    const url = prompt('Новый URL изображения', m.image_url || '');
-                                    if (url != null) updateMaterial(m._rowId,'image_url', url.trim());
-                                  }}
-                                >изменить</button>
+                                {/* Удалены кнопки удаления/замены изображения по требованию */}
                               </div>
                             ) : (
                               <button
@@ -1523,16 +1526,7 @@ export default function App() {
                                 >
                                   <span className="material-symbols-outlined text-base">open_in_new</span>
                                 </a>
-                                <button
-                                  className="text-xs text-gray-400 hover:text-red-600"
-                                  title="Убрать ссылку"
-                                  onClick={()=> updateMaterial(m._rowId,'item_url','')}
-                                >✕</button>
-                                <button
-                                  className="text-xs text-gray-500 hover:text-primary-600"
-                                  title="Изменить ссылку"
-                                  onClick={()=> { const v = prompt('Новый URL товара', m.item_url||''); if (v!=null) updateMaterial(m._rowId,'item_url', v.trim()); }}
-                                >изменить</button>
+                                {/* Удалены кнопки удаления/изменения ссылки по требованию */}
                               </div>
                             ) : (
                               <button
