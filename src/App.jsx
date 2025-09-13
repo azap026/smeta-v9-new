@@ -104,11 +104,12 @@ export default function App() {
   const estimateSaveTimer = useRef(null);
 
   // Helper: преобразовать calcBlocks -> payload
-  function buildEstimatePayload() {
+  function buildEstimatePayload(blocksArg) {
+    const blocks = blocksArg || calcBlocks;
     return {
       code: 'current',
       title: 'Текущая смета',
-      items: calcBlocks.map(b => ({
+      items: blocks.map(b => ({
         work_code: b.work.code || '',
         work_name: b.work.name || b.work.code || '',
         unit: b.work.unit || null,
@@ -126,6 +127,48 @@ export default function App() {
       }))
     };
   }
+
+  async function saveEstimateSnapshot(blocksArg) {
+    try {
+      setEstimateSaving(true);
+      const payload = buildEstimatePayload(blocksArg);
+      const r = await fetch('/api/estimates/by-code/current/full', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), keepalive: true
+      });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+      setEstimateSavedAt(new Date());
+    } catch (e) {
+      console.warn('saveEstimateSnapshot error:', e?.message || e);
+    } finally { setEstimateSaving(false); }
+  }
+
+  // Последняя попытка сохранить на выгрузке страницы
+  function saveEstimateBeacon(blocksArg) {
+    try {
+      const payload = buildEstimatePayload(blocksArg);
+      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+      // navigator.sendBeacon ограничен ~64KB; для больших данных может не пройти
+      if (navigator.sendBeacon) {
+        return navigator.sendBeacon('/api/estimates/by-code/current/full', blob);
+      }
+      return false;
+    } catch { return false; }
+  }
+
+  // Сохранение при закрытии/перезагрузке страницы
+  useEffect(() => {
+    const handler = () => {
+      if (!calcBlocks.length) return;
+      // Стараемся отправить моментальный снимок
+      const ok = saveEstimateBeacon();
+      if (!ok) {
+        // запасной вариант: синхронная блокировка не используется; просто надеемся на keepalive в автосейве
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [calcBlocks]);
 
   // Загрузка сохранённой сметы при входе во вкладку calc (однократно за сессию)
   useEffect(() => {
@@ -256,7 +299,10 @@ export default function App() {
   work: { code: w.id, name: w.name, unit: w.unit||'', quantity:'', unit_price:(w.unit_price??'')+'', labor_total:0, stage_id: metaInfo?.stage_id, substage_id: metaInfo?.substage_id, stage_name: metaInfo?.stage_name, substage_name: metaInfo?.substage_name },
       materials
     };
-    setCalcBlocks(prev => [...prev, block]);
+  const nextBlocks = [...calcBlocks, block];
+  setCalcBlocks(nextBlocks);
+  // Немедленное сохранение после добавления блока (без ожидания дебаунса)
+  await saveEstimateSnapshot(nextBlocks);
     setAddBlockModal(false);
     setCreatingBlock(false);
   };
@@ -268,7 +314,7 @@ export default function App() {
   };
   // ===== Ширины столбцов и drag-состояние (независимое расширение таблицы) =====
   // Фиксированные ширины колонок
-  const colWidths = { code: 50, name: 600, unit: 100, price: 140, action: 48 }; // works
+  const colWidths = { code: 40, name: 600, unit: 100, price: 140, action: 48 }; // works
   const materialsColWidths = { id: 90, name: 600, unit: 70, price: 120, expenditure: 110, weight: 100, image: 120, item: 120, action: 60 };
   const [uploading, setUploading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -553,7 +599,10 @@ export default function App() {
         work: { code: it.work.id, name: it.work.name, unit: it.work.unit||'', quantity:'', unit_price: it.work.unit_price!=null? String(it.work.unit_price):'', image:'', labor_total:0, stage_id: it.work.stage_id, substage_id: it.work.substage_id },
         materials: it.materials
       }));
-      setCalcBlocks(prev=>[...prev, ...newBlocks]);
+  const nextBlocks = [...calcBlocks, ...newBlocks];
+  setCalcBlocks(nextBlocks);
+  // Сохраним сразу после импорта, чтобы не потерять после перезагрузки
+  await saveEstimateSnapshot(nextBlocks);
     } finally { setBulkLoading(false);} };
   return (
     <div id="webcrumbs"> 

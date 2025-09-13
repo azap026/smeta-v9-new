@@ -15,7 +15,8 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// увеличим лимит тела JSON, т.к. снимок сметы может быть большим
+app.use(express.json({ limit: '10mb' }));
 // Simple root for connectivity check
 app.get('/', (req, res) => res.type('text/plain').send('ok'));
 
@@ -974,12 +975,12 @@ app.post('/api/estimates/by-code/:code/full', async (req,res) => {
     // Insert new items
     for (let idx=0; idx<items.length; idx++) {
       const it = items[idx];
-      const qtyNum = it.quantity===''||it.quantity==null? 0 : Number(String(it.quantity).replace(/,/g,'.'));
-      const upNum = it.unit_price===''||it.unit_price==null? null : Number(String(it.unit_price).replace(/,/g,'.'));
+      const qtyNum = it.quantity===''||it.quantity==null? 0 : Number(String(it.quantity).replace(/\s+/g,'').replace(/,/g,'.'));
+      const upNum = it.unit_price===''||it.unit_price==null? null : Number(String(it.unit_price).replace(/\s+/g,'').replace(/,/g,'.'));
       const insItem = await client.query(`insert into estimate_items(estimate_id, work_id, work_code, work_name, unit, quantity, unit_price, stage_id, substage_id, sort_order)
         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`, [
         estimateId,
-        it.work_code || null,
+        null, // не удерживаем FK, храним только snapshot кода
         it.work_code || null,
         it.work_name || it.work_code || '',
         it.unit || null,
@@ -990,15 +991,15 @@ app.post('/api/estimates/by-code/:code/full', async (req,res) => {
         idx
       ]);
       const itemId = insItem.rows[0].id;
-      if (Array.isArray(it.materials)) {
+    if (Array.isArray(it.materials)) {
         for (let mIdx=0; mIdx<it.materials.length; mIdx++) {
           const m = it.materials[mIdx];
-          const mQty = m.quantity===''||m.quantity==null? null : Number(String(m.quantity).replace(/,/g,'.'));
-          const mUp = m.unit_price===''||m.unit_price==null? null : Number(String(m.unit_price).replace(/,/g,'.'));
+      const mQty = m.quantity===''||m.quantity==null? null : Number(String(m.quantity).replace(/\s+/g,'').replace(/,/g,'.'));
+      const mUp = m.unit_price===''||m.unit_price==null? null : Number(String(m.unit_price).replace(/\s+/g,'').replace(/,/g,'.'));
           await client.query(`insert into estimate_item_materials(estimate_item_id, material_id, material_code, material_name, unit, quantity, unit_price, sort_order)
             values($1,$2,$3,$4,$5,$6,$7,$8)`, [
             itemId,
-            m.material_code || null,
+            null, // не удерживаем FK, храним только snapshot кода
             m.material_code || null,
             m.material_name || m.material_code || '',
             m.unit || null,
