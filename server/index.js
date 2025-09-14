@@ -15,8 +15,8 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
-// увеличим лимит тела JSON, т.к. снимок сметы может быть большим
-app.use(express.json({ limit: '10mb' }));
+// увеличим лимит тела JSON, т.к. снимок сметы может быть очень большим при массовом импорте
+app.use(express.json({ limit: '50mb' }));
 // Simple root for connectivity check
 app.get('/', (req, res) => res.type('text/plain').send('ok'));
 

@@ -208,7 +208,7 @@ export default function App() {
       const str = JSON.stringify(payload);
       const sig = hashString(str);
       if (sig === lastSavedSigRef.current) {
-        return; // нет изменений с прошлого сохранения
+        return true; // нет изменений с прошлого сохранения
       }
       const r = await fetch('/api/estimates/by-code/current/full', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: str, keepalive: true
@@ -217,8 +217,10 @@ export default function App() {
       if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
       setEstimateSavedAt(new Date());
       lastSavedSigRef.current = sig;
+      return true;
     } catch (e) {
       console.warn('saveEstimateSnapshot error:', e?.message || e);
+      return false;
     } finally { setEstimateSaving(false); }
   }
 
@@ -966,7 +968,10 @@ export default function App() {
   suppressNextAutosave.current = true;
   setCalcBlocks(nextBlocks);
   // Сохраним сразу после импорта, чтобы не потерять после перезагрузки
-  await saveEstimateSnapshot(nextBlocks);
+  const ok = await saveEstimateSnapshot(nextBlocks);
+  if (!ok) {
+    alert('Внимание: импорт выполнен локально, но сохранение снимка сметы на сервер не удалось. Не перезагружайте страницу и попробуйте ещё раз (или сократите объём).');
+  }
     } finally { setBulkLoading(false);} };
   return (
     <div id="webcrumbs"> 
