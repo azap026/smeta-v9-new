@@ -162,6 +162,19 @@ export default function App() {
   const [estimateSavedAt, setEstimateSavedAt] = useState(null); // Date
   const estimateInitialLoad = useRef(false);
   const estimateSaveTimer = useRef(null);
+  // Флаг для подавления ближайшего автосохранения после явного сохранения
+  const suppressNextAutosave = useRef(false);
+  // Подпись последнего сохранённого состояния (чтобы не отправлять одинаковые снимки)
+  const lastSavedSigRef = useRef('');
+
+  const hashString = (s) => {
+    // Быстрый нех crypt хеш (djb2 xor) + длина
+    let h = 5381 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
+    }
+    return h.toString(36) + ':' + s.length;
+  };
 
   // Helper: преобразовать calcBlocks -> payload (мемоизировано)
   const buildEstimatePayload = useCallback((blocksArg) => {
@@ -192,12 +205,18 @@ export default function App() {
     try {
       setEstimateSaving(true);
       const payload = buildEstimatePayload(blocksArg);
+      const str = JSON.stringify(payload);
+      const sig = hashString(str);
+      if (sig === lastSavedSigRef.current) {
+        return; // нет изменений с прошлого сохранения
+      }
       const r = await fetch('/api/estimates/by-code/current/full', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), keepalive: true
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: str, keepalive: true
       });
   const j = await r.json().catch(()=>({})); // swallow JSON errors
       if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
       setEstimateSavedAt(new Date());
+      lastSavedSigRef.current = sig;
     } catch (e) {
       console.warn('saveEstimateSnapshot error:', e?.message || e);
     } finally { setEstimateSaving(false); }
@@ -225,10 +244,15 @@ export default function App() {
   const saveEstimateBeacon = useCallback((blocksArg) => {
     try {
       const payload = buildEstimatePayload(blocksArg);
-      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+      const str = JSON.stringify(payload);
+      const sig = hashString(str);
+      if (sig === lastSavedSigRef.current) return true; // нечего отправлять
+      const blob = new Blob([str], { type: 'application/json' });
       // navigator.sendBeacon ограничен ~64KB; для больших данных может не пройти
       if (navigator.sendBeacon) {
-        return navigator.sendBeacon('/api/estimates/by-code/current/full', blob);
+        const ok = navigator.sendBeacon('/api/estimates/by-code/current/full', blob);
+        if (ok) lastSavedSigRef.current = sig;
+        return ok;
       }
       return false;
     } catch { return false; }
@@ -304,18 +328,27 @@ export default function App() {
   if (estimateSaveTimer.current) { clearTimeout(estimateSaveTimer.current); estimateSaveTimer.current = null; }
   if (estimateInitialLoad.current) return; // пропуск после загрузки
   if (active !== 'calc') return;
+  // Если только что было явное сохранение — пропустим один цикл автосейва
+  if (suppressNextAutosave.current) { suppressNextAutosave.current = false; return; }
     estimateSaveTimer.current = setTimeout(async () => {
       try {
         setEstimateSaving(true);
         const payload = buildEstimatePayload();
+        const str = JSON.stringify(payload);
+        const sig = hashString(str);
+        if (sig === lastSavedSigRef.current) {
+          setEstimateSaving(false);
+          return;
+        }
         const r = await fetch('/api/estimates/by-code/current/full', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: str
         });
         const j = await r.json().catch(()=>({}));
         if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
         setEstimateSavedAt(new Date());
+        lastSavedSigRef.current = sig;
       } catch (e) {
         console.warn('Ошибка сохранения сметы:', e.message || e);
       } finally {
@@ -472,6 +505,8 @@ export default function App() {
       materials
     };
   const nextBlocks = [...calcBlocks, block];
+  // Подавим ближайший автосейв (будет явное сохранение ниже)
+  suppressNextAutosave.current = true;
   setCalcBlocks(nextBlocks);
   // Немедленное сохранение после добавления блока (без ожидания дебаунса)
   await saveEstimateSnapshot(nextBlocks);
@@ -484,6 +519,28 @@ export default function App() {
   const updateBlock = (id, updater) => {
     setCalcBlocks(prev => prev.map(b => b.id===id ? updater(b) : b));
   };
+
+  // Защита от случайного дублирования блоков по одинаковому id (страховка на случай гонок)
+  useEffect(() => {
+    if (!calcBlocks || calcBlocks.length < 2) return;
+    const seen = new Set();
+    let hasDup = false;
+    for (const b of calcBlocks) {
+      if (seen.has(b.id)) { hasDup = true; break; }
+      seen.add(b.id);
+    }
+    if (hasDup) {
+      setCalcBlocks(prev => {
+        const s = new Set();
+        const filtered = prev.filter(b => {
+          if (s.has(b.id)) return false;
+          s.add(b.id);
+          return true;
+        });
+        return filtered;
+      });
+    }
+  }, [calcBlocks]);
   // ===== Ширины столбцов и drag-состояние (независимое расширение таблицы) =====
   // Фиксированные ширины колонок
   const colWidths = { code: 40, name: 600, unit: 100, price: 140, action: 48 }; // works
@@ -906,6 +963,7 @@ export default function App() {
         materials: it.materials
       }));
   const nextBlocks = [...calcBlocks, ...newBlocks];
+  suppressNextAutosave.current = true;
   setCalcBlocks(nextBlocks);
   // Сохраним сразу после импорта, чтобы не потерять после перезагрузки
   await saveEstimateSnapshot(nextBlocks);
@@ -1276,10 +1334,11 @@ export default function App() {
                                       value={{ id: m.code, name: m.name }}
                                       currentId={m.code}
                                       onSelect={async (mat)=>{
-                                        let prev;
-                                        onUpd(o=>{
-                                          const ms = [...o.materials];
-                                          prev = ms[mi];
+                                        // Атомарно сформируем следующее состояние блоков и сохраним тот же снимок
+                                        const prevBlocks = calcBlocks;
+                                        const nextBlocks = prevBlocks.map(bb => {
+                                          if (bb.id !== wb.id) return bb;
+                                          const ms = [...(bb.materials||[])];
                                           ms[mi] = {
                                             ...ms[mi],
                                             code: mat.id,
@@ -1289,16 +1348,19 @@ export default function App() {
                                             image_url: mat.image || '',
                                             sku: mat.sku || mat.id
                                           };
-                                          return { ...o, materials: ms };
+                                          return { ...bb, materials: ms };
                                         });
+                                        // Доп. защита от внезапных дублей
+                                        const seen = new Set();
+                                        const deduped = nextBlocks.filter(b => (seen.has(b.id) ? false : (seen.add(b.id), true)));
+                                        // Подавим ближайший автосейв — выполняем явное сохранение ниже
+                                        suppressNextAutosave.current = true;
+                                        setCalcBlocks(deduped);
                                         try {
-                                          await saveEstimateSnapshot();
+                                          await saveEstimateSnapshot(deduped);
                                         } catch (e) {
-                                          onUpd(o=>{
-                                            const ms = [...o.materials];
-                                            ms[mi] = prev;
-                                            return { ...o, materials: ms };
-                                          });
+                                          // Откатим изменения в UI, если сохранение не удалось
+                                          setCalcBlocks(prevBlocks);
                                           alert('Не удалось применить материал: '+(e.message||e));
                                         }
                                       }}

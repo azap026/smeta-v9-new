@@ -1081,41 +1081,106 @@ app.post('/api/estimates/by-code/:code/full', async (req,res) => {
     // Remove existing snapshot
     await client.query('delete from estimate_item_materials where estimate_item_id in (select id from estimate_items where estimate_id=$1)', [estimateId]);
     await client.query('delete from estimate_items where estimate_id=$1', [estimateId]);
-    // Insert new items
-    for (let idx=0; idx<items.length; idx++) {
-      const it = items[idx];
+
+    // Helper to chunk arrays (для очень больших смет)
+    const chunk = (arr, size) => {
+      const out = [];
+      for (let i=0; i<arr.length; i+=size) out.push(arr.slice(i, i+size));
+      return out;
+    };
+
+    // Prepare items payload for batch insert
+    const itemsData = items.map((it, idx) => {
       const qtyNum = it.quantity===''||it.quantity==null? 0 : Number(String(it.quantity).replace(/\s+/g,'').replace(/,/g,'.'));
       const upNum = it.unit_price===''||it.unit_price==null? null : Number(String(it.unit_price).replace(/\s+/g,'').replace(/,/g,'.'));
-      const insItem = await client.query(`insert into estimate_items(estimate_id, work_id, work_code, work_name, unit, quantity, unit_price, stage_id, substage_id, sort_order)
-        values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`, [
-        estimateId,
-        null, // не удерживаем FK, храним только snapshot кода
-        it.work_code || null,
-        it.work_name || it.work_code || '',
-        it.unit || null,
-        qtyNum,
-        upNum,
-        it.stage_id || null,
-        it.substage_id || null,
-        idx
-      ]);
-      const itemId = insItem.rows[0].id;
-    if (Array.isArray(it.materials)) {
-        for (let mIdx=0; mIdx<it.materials.length; mIdx++) {
-          const m = it.materials[mIdx];
-      const mQty = m.quantity===''||m.quantity==null? null : Number(String(m.quantity).replace(/\s+/g,'').replace(/,/g,'.'));
-      const mUp = m.unit_price===''||m.unit_price==null? null : Number(String(m.unit_price).replace(/\s+/g,'').replace(/,/g,'.'));
-          await client.query(`insert into estimate_item_materials(estimate_item_id, material_id, material_code, material_name, unit, quantity, unit_price, sort_order)
-            values($1,$2,$3,$4,$5,$6,$7,$8)`, [
+      return {
+        idx,
+        work_code: it.work_code || null,
+        work_name: it.work_name || it.work_code || '',
+        unit: it.unit || null,
+        quantity: qtyNum,
+        unit_price: upNum,
+        stage_id: it.stage_id || null,
+        substage_id: it.substage_id || null,
+      };
+    });
+
+    // Batch insert estimate_items and capture ids mapped by sort_order (idx)
+    let idByIdx = new Map();
+    if (itemsData.length) {
+      const colsPerRow = 10; // estimate_id, work_id, work_code, work_name, unit, quantity, unit_price, stage_id, substage_id, sort_order
+      const values = [];
+      const params = [];
+      let p = 1;
+      for (const it of itemsData) {
+        values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+        params.push(
+          estimateId,
+          null,
+          it.work_code,
+          it.work_name,
+          it.unit,
+          it.quantity,
+          it.unit_price,
+          it.stage_id,
+          it.substage_id,
+          it.idx,
+        );
+      }
+      const sql = `insert into estimate_items(estimate_id, work_id, work_code, work_name, unit, quantity, unit_price, stage_id, substage_id, sort_order)
+        values ${values.join(',')} returning id, sort_order`;
+      const rIns = await client.query(sql, params);
+      for (const r of rIns.rows) idByIdx.set(r.sort_order, r.id);
+    }
+
+    // Prepare materials payload flattened, referencing parent item idx
+    const materialsFlat = [];
+    for (let idx=0; idx<items.length; idx++) {
+      const it = items[idx];
+      if (!Array.isArray(it.materials) || !it.materials.length) continue;
+      for (let mIdx=0; mIdx<it.materials.length; mIdx++) {
+        const m = it.materials[mIdx];
+        const mQty = m.quantity===''||m.quantity==null? null : Number(String(m.quantity).replace(/\s+/g,'').replace(/,/g,'.'));
+        const mUp = m.unit_price===''||m.unit_price==null? null : Number(String(m.unit_price).replace(/\s+/g,'').replace(/,/g,'.'));
+        materialsFlat.push({
+          parentIdx: idx,
+          material_code: m.material_code || null,
+          material_name: m.material_name || m.material_code || '',
+          unit: m.unit || null,
+          quantity: mQty,
+          unit_price: mUp,
+          sort_order: mIdx,
+        });
+      }
+    }
+
+    if (materialsFlat.length) {
+      // Insert in chunks to avoid parameter explosion (e.g., 1000 rows per batch)
+      const ROW_SIZE = 8; // estimate_item_id, material_id, material_code, material_name, unit, quantity, unit_price, sort_order
+      const PER_BATCH = 1000; // rows
+      for (const batch of chunk(materialsFlat, PER_BATCH)) {
+        const values = [];
+        const params = [];
+        let p = 1;
+        for (const m of batch) {
+          const itemId = idByIdx.get(m.parentIdx);
+          if (!itemId) continue; // safety
+          values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+          params.push(
             itemId,
-            null, // не удерживаем FK, храним только snapshot кода
-            m.material_code || null,
-            m.material_name || m.material_code || '',
-            m.unit || null,
-            mQty,
-            mUp,
-            mIdx
-          ]);
+            null,
+            m.material_code,
+            m.material_name,
+            m.unit,
+            m.quantity,
+            m.unit_price,
+            m.sort_order,
+          );
+        }
+        if (values.length) {
+          const sql = `insert into estimate_item_materials(estimate_item_id, material_id, material_code, material_name, unit, quantity, unit_price, sort_order)
+            values ${values.join(',')}`;
+          await client.query(sql, params);
         }
       }
     }
