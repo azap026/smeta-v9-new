@@ -45,6 +45,8 @@
 .sticky-thead th {
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: 20;
   background: #f9fafb; /* bg-gray-50 */
+  /* легкая граница для отделения от строк */
+  border-bottom: 1px solid #e5e7eb; /* gray-200 */
 }

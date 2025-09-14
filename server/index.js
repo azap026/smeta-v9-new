@@ -56,7 +56,7 @@ app.get('/api/stages', async (req, res) => {
   try {
     const { phase_id } = req.query;
     const { rows } = await pool.query(
-      phase_id ? 'select * from stages where phase_id=$1 order by id' : 'select * from stages order by id',
+      phase_id ? 'select * from stages where phase_id=$1 order by sort_order, id' : 'select * from stages order by sort_order, id',
       phase_id ? [phase_id] : []
     );
     res.json(rows);
@@ -66,7 +66,7 @@ app.get('/api/substages', async (req, res) => {
   try {
     const { stage_id } = req.query;
     const { rows } = await pool.query(
-      stage_id ? 'select * from substages where stage_id=$1 order by id' : 'select * from substages order by id',
+      stage_id ? 'select * from substages where stage_id=$1 order by sort_order, id' : 'select * from substages order by sort_order, id',
       stage_id ? [stage_id] : []
     );
     res.json(rows);
@@ -95,20 +95,20 @@ app.get('/api/works-rows', async (req, res) => {
   const qRaw = (req.query.q || '').toString().trim();
   const q = qRaw.toLowerCase();
     const [phasesR, stagesR, substagesR, worksR] = await Promise.all([
-      pool.query('select * from phases'),
-      pool.query('select * from stages'),
-      pool.query('select * from substages'),
-      pool.query('select * from works_ref'),
+      pool.query('select * from phases order by sort_order, id'),
+      pool.query('select * from stages order by sort_order, id'),
+      pool.query('select * from substages order by sort_order, id'),
+      pool.query('select * from works_ref order by sort_order, id'),
     ]);
     const phases = phasesR.rows;
     const stages = stagesR.rows;
     const substages = substagesR.rows;
     const works = worksR.rows;
 
-    // Натуральная сортировка идентификаторов (учитывает числа внутри строк)
-    const naturalId = (a, b) => {
-      const av = String(a.id || a);
-      const bv = String(b.id || b);
+    // Сортировка строго по натуральному id (numeric): stage id → substage id → work id
+    const cmpById = (a, b) => {
+      const av = String((a && a.id != null ? a.id : a) ?? '');
+      const bv = String((b && b.id != null ? b.id : b) ?? '');
       return av.localeCompare(bv, 'ru', { numeric: true, sensitivity: 'base' });
     };
 
@@ -125,16 +125,16 @@ app.get('/api/works-rows', async (req, res) => {
 
     // Плоский режим: полностью игнорируем фазы. Сортируем все стадии натурально.
     const out = [];
-    const stagesSorted = [...stages].sort(naturalId);
+    const stagesSorted = [...stages].sort(cmpById);
     for (const st of stagesSorted) {
       out.push({ type: 'group', level: 'stage', code: st.id, title: st.name || st.id, parents: [] });
-      for (const w of (byStageWorksOnly[st.id] || []).sort(naturalId)) {
+      for (const w of (byStageWorksOnly[st.id] || []).sort(cmpById)) {
         out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price, parents: [st.id] });
       }
-      const stSubs = (byStageSubs[st.id] || []).sort(naturalId);
+      const stSubs = (byStageSubs[st.id] || []).sort(cmpById);
       for (const ss of stSubs) {
         out.push({ type: 'group', level: 'substage', code: ss.id, title: ss.name || ss.id, parents: [st.id] });
-        for (const w of (bySubWorks[ss.id] || []).sort(naturalId)) {
+        for (const w of (bySubWorks[ss.id] || []).sort(cmpById)) {
           out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price, parents: [st.id, ss.id] });
         }
       }
@@ -143,7 +143,7 @@ app.get('/api/works-rows', async (req, res) => {
     const orphan = works.filter(w => !w.stage_id && !w.substage_id);
     if (orphan.length) {
       out.push({ type: 'group', level: 'orphan', code: '_ungrouped', title: 'Прочее', parents: [] });
-      for (const w of orphan.sort(naturalId)) {
+      for (const w of orphan.sort(cmpById)) {
         out.push({ type: 'item', code: w.id, name: w.name, unit: w.unit, price: w.unit_price, parents: ['_ungrouped'] });
       }
     }
@@ -199,8 +199,8 @@ app.get('/api/works-rows', async (req, res) => {
 app.get('/api/debug-counts', async (req, res) => {
   try {
   const q = async (t) => (await pool.query(`select count(*)::int as c from ${t}`)).rows[0].c;
-  const [ph, st, ss, wr, mt] = await Promise.all(['phases','stages','substages','works_ref','materials'].map(q));
-  res.json({ phases: ph, stages: st, substages: ss, works_ref: wr, materials: mt });
+  const [ph, st, ss, wr, mt, wm] = await Promise.all(['phases','stages','substages','works_ref','materials','work_materials'].map(q));
+  res.json({ phases: ph, stages: st, substages: ss, works_ref: wr, materials: mt, work_materials: wm });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -382,7 +382,7 @@ app.delete('/api/work-materials/:work_id/:material_id', async (req,res) => {
 app.get('/api/work-materials-bundles', async (req,res) => {
   try {
   const { rows } = await pool.query(`select wm.work_id,
-        w.name as work_name, w.unit as work_unit, w.unit_price as work_unit_price,
+        w.name as work_name, w.unit as work_unit, w.unit_price as work_unit_price, w.sort_order as work_sort_order,
         w.stage_id, w.substage_id, st.name as stage_name, ss.name as substage_name,
     wm.material_id, m.name as material_name, m.unit as material_unit, m.unit_price as material_unit_price, m.image_url as material_image_url,
         wm.consumption_per_work_unit, wm.waste_coeff
@@ -395,7 +395,7 @@ app.get('/api/work-materials-bundles', async (req,res) => {
     const map = new Map();
     for (const r of rows) {
       if (!map.has(r.work_id)) {
-        map.set(r.work_id, { work:{ id:r.work_id, name:r.work_name||r.work_id, unit:r.work_unit||'', unit_price:r.work_unit_price, stage_id:r.stage_id, stage_name:r.stage_name, substage_id:r.substage_id, substage_name:r.substage_name }, materials:[] });
+        map.set(r.work_id, { work:{ id:r.work_id, name:r.work_name||r.work_id, unit:r.work_unit||'', unit_price:r.work_unit_price, sort_order: r.work_sort_order, stage_id:r.stage_id, stage_name:r.stage_name, substage_id:r.substage_id, substage_name:r.substage_name }, materials:[] });
       }
       map.get(r.work_id).materials.push({
         code: r.material_id,
@@ -416,11 +416,12 @@ app.post('/api/admin/import-work-materials', upload.single('file'), async (req,r
   const tmpPath = req.file.path;
   try {
     const content = fs.readFileSync(tmpPath, 'utf8');
-    const records = parse(content, { delimiter: ';', columns: true, skip_empty_lines: true, trim: true });
+    const records = parse(content, { delimiter: ';', columns: true, skip_empty_lines: true, trim: true, bom: true });
     let inserted=0, updated=0, skipped=0;
     for (const r of records) {
       const work_id = (r.work_id || r.WORK_ID || '').trim();
-      const material_id = (r.material_id || r.MATERIAL_ID || '').trim();
+      // accept common header typo "m.aterial_id" as material_id
+      const material_id = (r.material_id || r.MATERIAL_ID || r['m.aterial_id'] || r['M.ATERIAL_ID'] || '').trim();
       if (!work_id || !material_id) { skipped++; continue; }
       const cpuRaw = r.consumption_per_work_unit || r.CONSUMPTION_PER_WORK_UNIT || r.cpu || '';
       const wcRaw = r.waste_coeff || r.WASTE_COEFF || r.wc || '';
@@ -456,6 +457,60 @@ app.get('/api/admin/export-materials', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="materials_'+new Date().toISOString().slice(0,10)+'.csv"');
     res.send('\uFEFF'+csv);
   } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+
+// Export work-materials links CSV (normative links)
+app.get('/api/admin/export-work-materials', async (req, res) => {
+  try {
+    const q = `
+      select wm.work_id, w.name as work_name,
+             wm.material_id, m.name as material_name,
+             wm.consumption_per_work_unit, wm.waste_coeff
+      from work_materials wm
+      left join works_ref w on w.id = wm.work_id
+      left join materials m on m.id = wm.material_id
+      order by wm.work_id, wm.material_id`;
+    const { rows } = await pool.query(q);
+    const headers = ['work_id','work_name','material_id','material_name','consumption_per_work_unit','waste_coeff'];
+    const esc = (v) => {
+      if (v == null) return '';
+      const s = String(v);
+      return /[";\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+    };
+    let csv = headers.join(';') + '\n';
+    for (const r of rows) {
+      csv += [
+        r.work_id,
+        r.work_name,
+        r.material_id,
+        r.material_name,
+        r.consumption_per_work_unit,
+        r.waste_coeff
+      ].map(esc).join(';') + '\n';
+    }
+    res.setHeader('Content-Type','text/csv; charset=utf-8');
+    const date = new Date().toISOString().slice(0,10);
+    res.setHeader('Content-Disposition', `attachment; filename="work_materials_${date}.csv"`);
+    res.send('\uFEFF'+csv);
+  } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+
+// Clear only work-materials links (keep schema and other tables)
+app.post('/api/admin/clear-work-materials', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const before = (await client.query('select count(*)::int as c from work_materials')).rows[0].c;
+    await client.query('truncate table work_materials restart identity cascade');
+    const after = (await client.query('select count(*)::int as c from work_materials')).rows[0].c;
+    await client.query('commit');
+    res.json({ ok:true, cleared:true, before, after });
+  } catch (e) {
+    await client.query('rollback');
+    res.status(500).json({ ok:false, error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 

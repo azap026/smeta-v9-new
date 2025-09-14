@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
 // Конфиг ширин/высот для вкладки "Расчет сметы" — меняйте цифры здесь
 export const calcColWidths = {
   idx: 60,          // № / код работы
   name: 500,        // Наименование работ / материалов
-  image: 70,        // Превью изображения материала
+  image: 100,        // Превью изображения материала
   unit: 80,         // Единица измерения
   qty: 90,          // Количество
   unitPrice: 110,   // Цена за единицу
@@ -54,7 +54,10 @@ export default function App() {
     try { return localStorage.getItem('activeTab') || 'calc'; } catch { return 'calc'; }
   }); // calc | works | materials
   const [works, setWorks] = useState([]);
-  const WORKS_PAGE_SIZE = 30;
+  const worksScrollRef = useRef(null);
+  const worksTheadRef = useRef(null);
+  const [worksMaxHeight, setWorksMaxHeight] = useState(null);
+  const [worksPageSize, setWorksPageSize] = useState(0);
   const [worksPage, setWorksPage] = useState(1); // текущая страница (для запроса)
   const [worksHasMore, setWorksHasMore] = useState(false);
   const [worksTotal, setWorksTotal] = useState(0);
@@ -92,7 +95,10 @@ export default function App() {
   const [worksLoading, setWorksLoading] = useState(false);
   const [worksError, setWorksError] = useState('');
   // ===== Materials state =====
-  const MATERIALS_PAGE_SIZE = 30;
+  const materialsScrollRef = useRef(null);
+  const materialsTheadRef = useRef(null);
+  const [materialsMaxHeight, setMaterialsMaxHeight] = useState(null);
+  const [materialsPageSize, setMaterialsPageSize] = useState(0);
   const [materials, setMaterials] = useState([]);
   const [materialsPage, setMaterialsPage] = useState(1);
   const [materialsHasMore, setMaterialsHasMore] = useState(false);
@@ -146,6 +152,10 @@ export default function App() {
   const [calcBlocks, setCalcBlocks] = useState([]); // [{id, groupName, work:{}, materials:[{}}]]
   const CALC_PAGE_BLOCKS = 30;
   const [calcVisibleBlocks, setCalcVisibleBlocks] = useState(CALC_PAGE_BLOCKS);
+  // Ограничение высоты для таблицы расчёта сметы (как для работ/материалов)
+  const calcTheadRef = useRef(null);
+  const [calcMaxHeight, setCalcMaxHeight] = useState(null);
+  const [linksUploading, setLinksUploading] = useState(false);
   // Состояние сохранения сметы
   const [estimateSaving, setEstimateSaving] = useState(false);
   const [estimateSavedAt, setEstimateSavedAt] = useState(null); // Date
@@ -189,6 +199,24 @@ export default function App() {
       setEstimateSavedAt(new Date());
     } catch (e) {
       console.warn('saveEstimateSnapshot error:', e?.message || e);
+    } finally { setEstimateSaving(false); }
+  }
+
+  // Полная очистка сохранённой сметы (снимка) по коду 'current'
+  async function clearEstimateSnapshot() {
+    try {
+      setEstimateSaving(true);
+      const payload = { code: 'current', title: 'Текущая смета', items: [], clear: true };
+      const r = await fetch('/api/estimates/by-code/current/full', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), keepalive: true
+      });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+      setEstimateSavedAt(new Date());
+      return true;
+    } catch (e) {
+      console.warn('clearEstimateSnapshot error:', e?.message || e);
+      return false;
     } finally { setEstimateSaving(false); }
   }
 
@@ -484,12 +512,13 @@ export default function App() {
   // Load works rows from API when opening the Works tab (paginated)
   useEffect(() => {
     if (active !== 'works') return;
+    if (!worksPageSize) return; // ждём вычисления размера страницы
     let aborted = false;
     (async () => {
       try {
         setWorksLoading(true); setWorksError('');
         const qParam = worksSearch ? `&q=${encodeURIComponent(worksSearch)}` : '';
-        const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}${qParam}`;
+        const params = `?page=${worksPage}&limit=${worksPageSize}${qParam}`;
         const data = await fetchJsonTry([
           `/api/works-rows${params}`,
           `http://localhost:4000/api/works-rows${params}`,
@@ -524,7 +553,17 @@ export default function App() {
       }
     })();
     return () => { aborted = true; };
-  }, [active, worksPage, worksSearch]);
+  }, [active, worksPage, worksSearch, worksPageSize]);
+  // Первичный расчёт до первого fetch (чтобы избежать стартовой загрузки 30)
+  useLayoutEffect(() => {
+    if (active !== 'works') return;
+    const el = worksScrollRef.current;
+    if (!el) return;
+    const h = el.clientHeight || 0;
+    const base = (_rowHeights.works?.item) || 52;
+    const over = (overscanDefaults.refs || 6);
+    setWorksPageSize(Math.min(70, Math.max(10, Math.ceil(h / base) + over)));
+  }, [active]);
 
   // Debounce поиска: при изменении worksSearch сбрасываем страницу и перезагружаем список
   useEffect(() => {
@@ -536,6 +575,51 @@ export default function App() {
     }, 400);
     return () => { if (searchDebounce.current) clearTimeout(searchDebounce.current); };
   }, [worksSearch, active]);
+  // Динамический размер страницы для работ (по высоте внутреннего контейнера)
+  useEffect(() => {
+    if (active !== 'works') return;
+    const el = worksScrollRef.current;
+    if (!el) return;
+    const compute = () => {
+      const h = el.clientHeight || 0;
+      const base = (_rowHeights.works?.item) || 52;
+      const over = (overscanDefaults.refs || 6);
+      // кап по серверу: /api/works-rows ограничит до 70
+      const v = Math.min(70, Math.max(10, Math.ceil(h / base) + over));
+      setWorksPageSize(v);
+    };
+    const ro = new ResizeObserver(() => compute());
+    compute();
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [active]);
+  // Ограничим высоту справочника работ так, чтобы под заголовком помещалось не более 10 строк
+  useLayoutEffect(() => {
+    if (active !== 'works') return;
+    const update = () => {
+      const headH = (worksTheadRef.current?.offsetHeight) || 36;
+      const base = (_rowHeights.works?.item) || 52;
+      const maxH = headH + base * 13;
+      setWorksMaxHeight(maxH);
+    };
+    update();
+    let ro;
+    if (worksTheadRef.current && 'ResizeObserver' in window) {
+      ro = new ResizeObserver(() => update());
+      ro.observe(worksTheadRef.current);
+    }
+    const onResize = () => update();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (ro) ro.disconnect();
+    };
+  }, [active]);
+  // При изменении вычисленного размера — перезагрузим с 1-й страницы
+  useEffect(() => {
+    if (active !== 'works') return;
+    setWorksPage(1);
+  }, [worksPageSize, active]);
   const updateMaterial = (id, field, value) => {
     setMaterials(prev => prev.map(m => (m._rowId === id ? { ...m, [field]: value, _dirty: true } : m)));
   };
@@ -597,12 +681,13 @@ export default function App() {
   // Загрузка материалов при активации вкладки или смене страницы/поиска
   useEffect(() => {
     if (active !== 'materials') return;
+    if (!materialsPageSize) return; // ждём вычисления размера страницы
     let aborted = false;
     (async () => {
       try {
         setMaterialsLoading(true); setMaterialsError('');
         const qParam = materialsSearch ? `&q=${encodeURIComponent(materialsSearch)}` : '';
-        const params = `?page=${materialsPage}&limit=${MATERIALS_PAGE_SIZE}${qParam}`;
+        const params = `?page=${materialsPage}&limit=${materialsPageSize}${qParam}`;
         const data = await fetchJsonTry([
           `/api/materials${params}`,
           `http://localhost:4000/api/materials${params}`,
@@ -624,7 +709,17 @@ export default function App() {
       }
     })();
     return () => { aborted = true; };
-  }, [active, materialsPage, materialsSearch]);
+  }, [active, materialsPage, materialsSearch, materialsPageSize]);
+  // Первичный расчёт для материалов (до первого fetch)
+  useLayoutEffect(() => {
+    if (active !== 'materials') return;
+    const el = materialsScrollRef.current;
+    if (!el) return;
+    const h = el.clientHeight || 0;
+    const base = (_rowHeights.materials?.item) || 56;
+    const over = (overscanDefaults.refs || 6);
+    setMaterialsPageSize(Math.min(100, Math.max(10, Math.ceil(h / base) + over)));
+  }, [active]);
 
   // Debounce поиска материалов
   useEffect(() => {
@@ -636,6 +731,72 @@ export default function App() {
     }, 400);
     return () => { if (materialsSearchDebounce.current) clearTimeout(materialsSearchDebounce.current); };
   }, [materialsSearch, active]);
+  // Динамический размер страницы для материалов (по высоте внутреннего контейнера)
+  useEffect(() => {
+    if (active !== 'materials') return;
+    const el = materialsScrollRef.current;
+    if (!el) return;
+    const compute = () => {
+      const h = el.clientHeight || 0;
+      const base = (_rowHeights.materials?.item) || 56;
+      const over = (overscanDefaults.refs || 6);
+      // кап по серверу: /api/materials ограничит до ~100
+      const v = Math.min(100, Math.max(10, Math.ceil(h / base) + over));
+      setMaterialsPageSize(v);
+    };
+    const ro = new ResizeObserver(() => compute());
+    compute();
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [active]);
+  // Ограничим высоту материалов так, чтобы помещалось не более 10 строк под заголовком
+  useLayoutEffect(() => {
+    if (active !== 'materials') return;
+    const update = () => {
+      const headH = (materialsTheadRef.current?.offsetHeight) || 36;
+      const base = (_rowHeights.materials?.item) || 56;
+      const maxH = headH + base * 13; // заголовок + 13 строк
+      setMaterialsMaxHeight(maxH);
+    };
+    update();
+    let ro;
+    if (materialsTheadRef.current && 'ResizeObserver' in window) {
+      ro = new ResizeObserver(() => update());
+      ro.observe(materialsTheadRef.current);
+    }
+    const onResize = () => update();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (ro) ro.disconnect();
+    };
+  }, [active]);
+  // Ограничим высоту таблицы расчёта сметы: заголовок + 13 условных строк по базовой высоте работы
+  useLayoutEffect(() => {
+    if (active !== 'calc') return;
+    const update = () => {
+      const headH = (calcTheadRef.current?.offsetHeight) || 36;
+      const base = (calcRowHeights?.work) || 52; // базовая высота строки работы
+      const maxH = headH + base * 13;
+      setCalcMaxHeight(maxH);
+    };
+    update();
+    let ro;
+    if (calcTheadRef.current && 'ResizeObserver' in window) {
+      ro = new ResizeObserver(() => update());
+      ro.observe(calcTheadRef.current);
+    }
+    const onResize = () => update();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (ro) ro.disconnect();
+    };
+  }, [active]);
+  useEffect(() => {
+    if (active !== 'materials') return;
+    setMaterialsPage(1);
+  }, [materialsPageSize, active]);
   const [bulkLoading,setBulkLoading]=useState(false);
   // Подгрузим справочник работ (только группы) при открытой вкладке calc для отображения названий разделов вместо кода
   useEffect(() => {
@@ -772,7 +933,7 @@ export default function App() {
         {/* Main Content */}
         <div className="flex-1 flex flex-col">
           {/* Header */}
-          <header className="bg-white shadow-sm z-10">
+          <header className="bg-white shadow-sm z-20 sticky top-0">
             <div className="flex justify-between items-center px-4 py-3">
               <div className="flex items-center">
                 <button className="md:hidden mr-2">
@@ -791,9 +952,9 @@ export default function App() {
             </div>
           </header>
           {/* Main Content Area */}
-          <div className="flex-1 overflow-auto p-6 bg-gray-50">
+          <div className="flex-1 min-h-0 overflow-hidden p-6 bg-gray-50 flex flex-col">
             {active === "calc" ? (
-            <div className="space-y-6">
+            <div className="flex flex-col min-h-0 gap-6">
             <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
               <div className="p-4 border-b border-gray-200">
                 <h2 className="font-semibold text-lg">Основные параметры объекта</h2>
@@ -817,8 +978,9 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
-              <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+            <div className="flex-1 min-h-0">
+              <div className="bg-white rounded-xl shadow-sm overflow-hidden h-full flex flex-col mb-6">
+                <div className="p-4 border-b border-gray-200 flex justify-between items-center sticky top-0 z-10 bg-white">
                 <h2 className="font-semibold text-lg">Работы и материалы</h2>
                 <div className="flex gap-2">
                   <button onClick={openAddBlockModal} className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors">
@@ -828,6 +990,83 @@ export default function App() {
                   <button onClick={createBlocksFromAllBundles} disabled={bulkLoading} className="bg-white border border-primary-300 text-primary-600 hover:bg-primary-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors disabled:opacity-60">
                     <span className="material-symbols-outlined text-sm">playlist_add</span>
                     <span>{bulkLoading? 'Загружаю...' : 'Импорт всех связок'}</span>
+                  </button>
+                  <label className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors cursor-pointer">
+                    <input type="file" accept=".csv,text/csv" className="hidden" onChange={async (e)=>{
+                      const file = e.target.files && e.target.files[0];
+                      if (!file) return;
+                      setLinksUploading(true);
+                      try {
+                        const fd = new FormData();
+                        fd.append('file', file);
+                        const r = await fetch('/api/admin/import-work-materials', { method: 'POST', body: fd });
+                        const j = await r.json().catch(()=>({}));
+                        if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP '+r.status));
+                        alert(`Импорт связей: добавлено ${j.inserted||0}, обновлено ${j.updated||0}, пропущено ${j.skipped||0}.`);
+                      } catch (err) {
+                        alert('Ошибка импорта связей: '+(err.message||err));
+                      } finally {
+                        setLinksUploading(false);
+                        e.target.value='';
+                      }
+                    }} />
+                    <span className="material-symbols-outlined text-sm">{linksUploading ? 'hourglass' : 'upload_file'}</span>
+                    <span>{linksUploading ? 'Импорт…' : 'Импорт связей'}</span>
+                  </label>
+                  <button
+                    className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
+                    title="Экспорт связей работа-материал"
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      try {
+                        const r = await fetch('/api/admin/export-work-materials');
+                        if (!r.ok) throw new Error('HTTP '+r.status);
+                        const blob = await r.blob();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'work_materials_export.csv';
+                        document.body.appendChild(a); a.click(); a.remove();
+                        setTimeout(()=> URL.revokeObjectURL(url), 2000);
+                      } catch (err) { alert('Ошибка экспорта связей: '+(err.message||err)); }
+                    }}
+                  >
+                    <span className="material-symbols-outlined text-sm">link</span>
+                    <span>Экспорт связей</span>
+                  </button>
+                  <button
+                    className="bg-white text-red-700 border border-red-200 hover:bg-red-50 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
+                    title="Удалить все связи работа-материал"
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      if (!confirm('Удалить все связи работа-материал? Сами справочники работ и материалов останутся.')) return;
+                      try {
+                        const r = await fetch('/api/admin/clear-work-materials', { method: 'POST' });
+                        const j = await r.json().catch(()=>({}));
+                        if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP '+r.status));
+                        // Очистим локальное состояние сметы и снимок, чтобы UI не показывал старые данные
+                        setCalcBlocks([]);
+                        setCalcVisibleBlocks(CALC_PAGE_BLOCKS);
+                        await clearEstimateSnapshot();
+                        // Попробуем получить свежие счётчики для подтверждения
+                        try {
+                          const rc = await fetch('/api/debug-counts');
+                          const jc = await rc.json().catch(()=>({}));
+                          if (rc.ok && !jc.error) {
+                            alert(`Связи очищены (до: ${j.before ?? '—'}, после: ${j.after ?? '0'}).\nСейчас в БД: work_materials=${jc.work_materials}`);
+                          } else {
+                            alert('Связи очищены. Можно импортировать новые.');
+                          }
+                        } catch {
+                          alert('Связи очищены. Можно импортировать новые.');
+                        }
+                      } catch (err) {
+                        alert('Ошибка очистки связей: '+(err.message||err));
+                      }
+                    }}
+                  >
+                    <span className="material-symbols-outlined text-sm">link_off</span>
+                    <span>Очистить связи</span>
                   </button>
                   <div className="flex items-center text-xs text-gray-500 ml-2">
                     {estimateSaving ? (
@@ -839,8 +1078,9 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              </div>
-              <div className="overflow-x-auto">
+                </div>
+                <div className="flex-1 min-h-0 overflow-auto" style={calcMaxHeight ? { maxHeight: calcMaxHeight } : undefined}>
+                  <div className="overflow-x-auto overflow-y-visible">
   <table className="w-full" style={{ tableLayout: 'fixed' }}>
                   <colgroup>
           {/* Ширины столбцов берутся из calcColWidths (см. верх файла). Меняйте там числа — обновится таблица. */}
@@ -854,7 +1094,7 @@ export default function App() {
                     <col style={{ width: calcColWidths.labor }} />
                     <col style={{ width: calcColWidths.actions }} />
                   </colgroup>
-                  <thead className="bg-gray-50 text-left sticky-thead">
+                  <thead ref={calcTheadRef} className="bg-gray-50 text-left sticky-thead">
                     <tr>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">№</th>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Наименование работ</th>
@@ -870,11 +1110,11 @@ export default function App() {
                   <VirtualizedTBody
                     rows={useMemo(() => {
                       if (!calcBlocks.length) return [{ kind: 'empty', key: 'empty' }];
-                      const blocksSlice = calcBlocks.slice(0, calcVisibleBlocks);
                       const natural = (a,b)=> String(a||'').localeCompare(String(b||''),'ru',{numeric:true,sensitivity:'base'});
+                      // Группируем по stage → substage на полном наборе блоков (без slice), чтобы итоговый порядок был глобально корректен
                       const stagesMap = new Map();
                       const orphan = [];
-                      for (const b of blocksSlice) {
+                      for (const b of calcBlocks) {
                         const st = b.work.stage_id || null;
                         const ss = b.work.substage_id || null;
                         if (!st) { orphan.push(b); continue; }
@@ -887,35 +1127,44 @@ export default function App() {
                           bucket.works.push(b);
                         }
                       }
-                      const stageKeys = Array.from(stagesMap.keys()).sort(natural);
-                      const out = [];
+                      const stageKeys = Array.from(stagesMap.keys()).sort((a,b)=> natural(a,b));
+                      const outFull = [];
                       for (const stId of stageKeys) {
                         const stage = stagesMap.get(stId);
                         const stageTitle = groupTitles[stId] || stage.stage_name || stId;
-                        out.push({ kind:'stage-header', key:'stage_'+stId, stId, title: stageTitle });
-                        stage.works.sort((a,b)=> natural(a.work.code,b.work.code));
+                        outFull.push({ kind:'stage-header', key:'stage_'+stId, stId, title: stageTitle });
+                        stage.works.sort((a,b)=> natural(a.work.code, b.work.code));
                         for (const wb of stage.works) {
-                          out.push({ kind:'block', key:'blk_'+wb.id, block: wb });
+                          outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
                         }
-                        const subKeys = Array.from(stage.substages.keys()).sort(natural);
+                        const subKeys = Array.from(stage.substages.keys()).sort((a,b)=> natural(a,b));
                         for (const ssId of subKeys) {
                           const ss = stage.substages.get(ssId);
                           const subTitle = groupTitles[ssId] || ss.substage_name || ssId;
-                          out.push({ kind:'sub-header', key:'sub_'+stId+'_'+ssId, stId, ssId, title: subTitle });
-                          ss.works.sort((a,b)=> natural(a.work.code,b.work.code));
+                          outFull.push({ kind:'sub-header', key:'sub_'+stId+'_'+ssId, stId, ssId, title: subTitle });
+                          ss.works.sort((a,b)=> natural(a.work.code, b.work.code));
                           for (const wb of ss.works) {
-                            out.push({ kind:'block', key:'blk_'+wb.id, block: wb });
+                            outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
                           }
                         }
                       }
                       if (orphan.length) {
-                        orphan.sort((a,b)=> natural(a.work.code,b.work.code));
-                        out.push({ kind:'stage-header', key:'orph', stId:'—', title:'Прочее' });
-                        for (const wb of orphan) out.push({ kind:'block', key:'blk_'+wb.id, block: wb });
+                        orphan.sort((a,b)=> natural(a.work.code, b.work.code));
+                        outFull.push({ kind:'stage-header', key:'orph', stId:'—', title:'Прочее' });
+                        for (const wb of orphan) outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
                       }
-                      // Добавим loader, если не все блоки показаны
-                      const hasMore = calcVisibleBlocks < calcBlocks.length;
-                      return hasMore ? [...out, { kind:'loader', key:'calc_loader' }] : out;
+                      // Ограничиваем по количеству блоков (а не по исходному массиву), чтобы порядок оставался глобальным
+                      let blocksCount = 0;
+                      const outCapped = [];
+                      for (const row of outFull) {
+                        outCapped.push(row);
+                        if (row.kind === 'block') {
+                          blocksCount++;
+                          if (blocksCount >= calcVisibleBlocks) break;
+                        }
+                      }
+                      const hasMore = calcBlocks.length > calcVisibleBlocks;
+                      return hasMore ? [...outCapped, { kind:'loader', key:'calc_loader' }] : outCapped;
                     }, [calcBlocks, calcVisibleBlocks, groupTitles])}
                     colCount={9}
                     overscan={overscanDefaults.calc}
@@ -967,14 +1216,18 @@ export default function App() {
                         const onRemove = () => setCalcBlocks(prev => prev.filter(b => b.id !== wb.id));
                         return (
                           <React.Fragment key={row.key}>
-                            <tr style={{ height: calcRowHeights.work }} role="row" aria-rowindex={ariaRowIndex}>
+                            <tr role="row" aria-rowindex={ariaRowIndex}>
                               <td role="cell" className="px-2 py-2 text-gray-800">{wb.work.code}</td>
-                              <td role="cell" className="px-2 py-2 text-gray-800">
-                                <input
+                              <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
+                                <textarea
+                                  rows={1}
                                   value={wb.work.name}
                                   placeholder="Наименование работы"
                                   onChange={(e)=> onUpd(b=> ({...b, work:{...b.work, name:e.target.value}}))}
-                                  className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                  onInput={(e)=> { const el=e.currentTarget; el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; }}
+                                  ref={(el)=> { if (el) { el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; } }}
+                                  className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none"
+                                  style={{ whiteSpace: 'normal', wordBreak: 'break-word', overflowY: 'hidden', resize: 'none' }}
                                 />
                               </td>
                               <td role="cell" className="px-2 py-2"></td>
@@ -996,10 +1249,19 @@ export default function App() {
                             {(wb.materials||[]).map((m, mi) => {
                               const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
                               return (
-                                <tr key={row.key+':m:'+mi} style={{ height: calcRowHeights.material }} role="row" aria-rowindex={ariaRowIndex+1+mi}>
+                                <tr key={row.key+':m:'+mi} role="row" aria-rowindex={ariaRowIndex+1+mi}>
                                   <td role="cell" className="px-2 py-2 text-gray-800"></td>
-                                  <td role="cell" className="px-2 py-2 text-gray-800">
-                                    <input value={m.name} placeholder="Материал" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                  <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
+                                    <textarea
+                                      rows={1}
+                                      value={m.name}
+                                      placeholder="Материал"
+                                      onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; })}
+                                      onInput={(e)=> { const el=e.currentTarget; el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; }}
+                                      ref={(el)=> { if (el) { el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; } }}
+                                      className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none"
+                                      style={{ whiteSpace: 'normal', wordBreak: 'break-word', overflowY: 'hidden', resize: 'none' }}
+                                    />
                                   </td>
                                   <td role="cell" className="px-2 py-2">
                                     {m.image_url ? (
@@ -1040,6 +1302,8 @@ export default function App() {
                     }}
                   />
                 </table>
+                  </div>
+                </div>
               </div>
             </div>
             {/* Modal: add calc block */}
@@ -1219,8 +1483,9 @@ export default function App() {
             </div>
             </div>
             ) : active === "works" ? (
-            <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+            <div className="flex-1 min-h-0">
+              <div className="bg-white rounded-xl shadow-sm overflow-hidden h-full flex flex-col">
+                <div className="p-4 border-b border-gray-200 flex justify-between items-center sticky top-0 z-10 bg-white">
                 <h2 className="font-semibold text-lg">Справочник работ</h2>
                 <div className="flex gap-2 items-center flex-wrap">
                   <div className="relative">
@@ -1333,6 +1598,7 @@ export default function App() {
                     <span className="material-symbols-outlined text-sm">download</span>
                     <span>Экспорт CSV</span>
                   </button>
+                  
                   <button
                     className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors"
                     onClick={(e) => { e.preventDefault(); openAddModal(); }}
@@ -1341,7 +1607,7 @@ export default function App() {
                     <span>Добавить работу</span>
                   </button>
                 </div>
-              </div>
+                </div>
               <AddWorkModal
                 open={modalOpen}
                 onOpenChange={(v) => setModalOpen(v)}
@@ -1380,20 +1646,21 @@ export default function App() {
                   )}
                 </div>
               </FloatingWindow>
-              {worksLoading && (<div className="p-4 text-sm text-gray-500">Загрузка…</div>)}
-              {worksError && (
-                <div className="p-4 text-sm text-red-600 flex items-center gap-3">
-                  <span>{worksError}</span>
-                  <button
-                    className="px-2 py-1 text-xs rounded bg-red-50 text-red-700 hover:bg-red-100"
-                    onClick={() => {
-                      setWorks([]); // сбросим чтобы триггернуть повторную загрузку
-                      setTimeout(() => setActive('works'));
-                    }}
-                  >Повторить</button>
-                </div>
-              )}
-              <div className="overflow-x-auto">
+              <div className="flex-1 min-h-0 overflow-auto" ref={worksScrollRef} style={worksMaxHeight ? { maxHeight: worksMaxHeight } : undefined}>
+                {worksLoading && (<div className="p-4 text-sm text-gray-500">Загрузка…</div>)}
+                {worksError && (
+                  <div className="p-4 text-sm text-red-600 flex items-center gap-3">
+                    <span>{worksError}</span>
+                    <button
+                      className="px-2 py-1 text-xs rounded bg-red-50 text-red-700 hover:bg-red-100"
+                      onClick={() => {
+                        setWorks([]); // сбросим чтобы триггернуть повторную загрузку
+                        setTimeout(() => setActive('works'));
+                      }}
+                    >Повторить</button>
+                  </div>
+                )}
+                <div className="overflow-x-auto overflow-y-visible">
                 <table className="w-full" style={{ tableLayout:'fixed' }}>
                   <colgroup>
                     <col style={{ width: colWidths.code }} />
@@ -1402,7 +1669,7 @@ export default function App() {
                     <col style={{ width: colWidths.price }} />
                     <col style={{ width: colWidths.action }} />
                   </colgroup>
-                  <thead className="bg-gray-50 text-left sticky-thead">
+                  <thead ref={worksTheadRef} className="bg-gray-50 text-left sticky-thead">
                     <tr>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Код</th>
                       <th role="columnheader" className="py-2 pl-1 pr-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
@@ -1505,12 +1772,15 @@ export default function App() {
                     }}
                   />
                 </table>
+                </div>
+                {/* Кнопка догрузки заменена на автоподгрузку при скролле */}
               </div>
-              {/* Кнопка догрузки заменена на автоподгрузку при скролле */}
+              </div>
             </div>
             ) : (
-              <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-                <div className="p-4 border-b border-gray-200 flex flex-wrap gap-2 items-center justify-between">
+              <div className="flex-1 min-h-0">
+                <div className="bg-white rounded-xl shadow-sm overflow-hidden h-full flex flex-col">
+                  <div className="p-4 border-b border-gray-200 flex flex-wrap gap-2 items-center justify-between sticky top-0 z-10 bg-white">
                   <h2 className="font-semibold text-lg">Справочник материалов</h2>
                   <div className="flex gap-2 items-center flex-wrap ml-auto">
                     <div className="relative">
@@ -1577,18 +1847,19 @@ export default function App() {
                       <span>Добавить</span>
                     </button>
                   </div>
-                </div>
-                {materialsLoading && materialsPage === 1 && (<div className="p-3 text-sm text-gray-500">Загрузка…</div>)}
-                {materialsError && (
-                  <div className="p-3 text-sm text-red-600 flex items-center gap-3">
-                    <span>{materialsError}</span>
-                    <button
-                      className="px-2 py-1 text-xs rounded bg-red-50 text-red-700 hover:bg-red-100"
-                      onClick={() => { setMaterials([]); setTimeout(()=>setMaterialsPage(1)); }}
-                    >Повторить</button>
                   </div>
-                )}
-                <div className="overflow-x-auto">
+                  <div className="flex-1 min-h-0 overflow-auto" ref={materialsScrollRef} style={materialsMaxHeight ? { maxHeight: materialsMaxHeight } : undefined}>
+                    {materialsLoading && materialsPage === 1 && (<div className="p-3 text-sm text-gray-500">Загрузка…</div>)}
+                    {materialsError && (
+                      <div className="p-3 text-sm text-red-600 flex items-center gap-3">
+                        <span>{materialsError}</span>
+                        <button
+                          className="px-2 py-1 text-xs rounded bg-red-50 text-red-700 hover:bg-red-100"
+                          onClick={() => { setMaterials([]); setTimeout(()=>setMaterialsPage(1)); }}
+                        >Повторить</button>
+                      </div>
+                    )}
+                    <div className="overflow-x-auto overflow-y-visible">
                   <table className="w-full" style={{ tableLayout:'fixed' }}>
                     <colgroup>
                       <col style={{ width: materialsColWidths.id }} />
@@ -1601,7 +1872,7 @@ export default function App() {
                       <col style={{ width: materialsColWidths.item }} />
                       <col style={{ width: materialsColWidths.action }} />
                     </colgroup>
-                    <thead className="bg-gray-50 text-left sticky-thead">
+                    <thead ref={materialsTheadRef} className="bg-gray-50 text-left sticky-thead">
                       <tr>
                         <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">ID</th>
                         <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
@@ -1647,7 +1918,10 @@ export default function App() {
                                 value={m.name||''}
                                 placeholder="Наименование"
                                 onChange={(e)=> { updateMaterial(m._rowId,'name', e.target.value); autoGrow(e.target); }}
+                                onInput={(e)=> autoGrow(e.currentTarget)}
                                 ref={(el)=> el && autoGrow(el)}
+                                rows={1}
+                                style={{ overflowY: 'hidden', resize: 'none' }}
                               />
                             </td>
                             <td role="cell" className="px-2 py-2 text-gray-800">
@@ -1718,8 +1992,10 @@ export default function App() {
                       }}
                     />
                   </table>
+                    </div>
+                    {/* Кнопка догрузки заменена на автоподгрузку при скролле */}
+                  </div>
                 </div>
-                {/* Кнопка догрузки заменена на автоподгрузку при скролле */}
               </div>
             )}
           </div>
@@ -1733,14 +2009,17 @@ export default function App() {
 function renderWorkRow(block, groupIndex, workSum, matsTotal) {
   return (
     <React.Fragment key={block.id}>
-  <tr style={{ height: calcRowHeights.work }}>
+  <tr>
   <td className="px-2 py-2 text-gray-800">{block.work.code}</td>
         <td className="px-2 py-2 text-gray-800">
-          <input
+          <textarea
             value={block.work.name}
             placeholder="Наименование работы"
-            onChange={(e)=> block._update && block._update(b=> ({...b, work:{...b.work, name:e.target.value}}))}
-            className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+            onChange={(e)=> { block._update && block._update(b=> ({...b, work:{...b.work, name:e.target.value}})); autoGrow(e.target); }}
+            ref={(el)=> el && autoGrow(el)}
+            className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none leading-snug"
+            style={{ whiteSpace:'normal', wordBreak:'break-word', overflow:'hidden' }}
+            rows={1}
           />
         </td>
   <td className="px-2 py-2"></td>
@@ -1762,10 +2041,18 @@ function renderWorkRow(block, groupIndex, workSum, matsTotal) {
       {block.materials.map((m, mi) => {
         const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
         return (
-      <tr key={mi} style={{ height: calcRowHeights.material }}>
+      <tr key={mi}>
             <td className="px-2 py-2 text-gray-800"></td>
             <td className="px-2 py-2 text-gray-800">
-              <input value={m.name} placeholder="Материал" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+              <textarea
+                value={m.name}
+                placeholder="Материал"
+                onChange={(e)=> { block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; }); autoGrow(e.target); }}
+                ref={(el)=> el && autoGrow(el)}
+                className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none leading-snug"
+                style={{ whiteSpace:'normal', wordBreak:'break-word', overflow:'hidden' }}
+                rows={1}
+              />
             </td>
             <td className="px-2 py-2">
               {m.image_url ? (
@@ -1791,7 +2078,7 @@ function renderWorkRow(block, groupIndex, workSum, matsTotal) {
           </tr>
         );
       })}
-  <tr className="bg-gray-50 font-semibold" style={{ height: calcRowHeights.total }}>
+  <tr className="bg-gray-50 font-semibold">
         <td className="px-2 py-2 text-gray-800" colSpan={6}>ИТОГО ПО ГРУППЕ:</td>
         <td className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
         <td className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
