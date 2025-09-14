@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 // Конфиг ширин/высот для вкладки "Расчет сметы" — меняйте цифры здесь
 export const calcColWidths = {
   idx: 60,          // № / код работы
@@ -11,11 +11,7 @@ export const calcColWidths = {
   labor: 130,       // Оплата труда / сумма по работе
   actions: 110      // Кнопки / действия
 };
-export const calcRowHeights = {
-  work: 40,
-  material: 40,
-  total: 36,
-};
+export const calcRowHeights = _rowHeights.calc;
 // Централизованные размеры превью изображений материалов
 // Меняйте здесь — обновятся все таблицы
 export const previewSizes = {
@@ -48,6 +44,9 @@ export function getPreviewStyle(kind = 'refMaterial') {
 import AddWorkModal from './components/AddWorkModal.tsx';
 import { Label, Input, Button } from './components/ui/form';
 import FloatingWindow from './components/ui/FloatingWindow.jsx';
+import VirtualizedTBody from './components/VirtualizedTBody.jsx';
+import { rowHeights as _rowHeights, overscanDefaults } from './virtualizationConfig.js';
+import { exportToCSV } from './utils/exporters.js';
 
 export default function App() {
   // Активная вкладка: читаем из localStorage, по умолчанию 'calc'
@@ -55,7 +54,7 @@ export default function App() {
     try { return localStorage.getItem('activeTab') || 'calc'; } catch { return 'calc'; }
   }); // calc | works | materials
   const [works, setWorks] = useState([]);
-  const WORKS_PAGE_SIZE = 70;
+  const WORKS_PAGE_SIZE = 30;
   const [worksPage, setWorksPage] = useState(1); // текущая страница (для запроса)
   const [worksHasMore, setWorksHasMore] = useState(false);
   const [worksTotal, setWorksTotal] = useState(0);
@@ -93,7 +92,7 @@ export default function App() {
   const [worksLoading, setWorksLoading] = useState(false);
   const [worksError, setWorksError] = useState('');
   // ===== Materials state =====
-  const MATERIALS_PAGE_SIZE = 70;
+  const MATERIALS_PAGE_SIZE = 30;
   const [materials, setMaterials] = useState([]);
   const [materialsPage, setMaterialsPage] = useState(1);
   const [materialsHasMore, setMaterialsHasMore] = useState(false);
@@ -103,8 +102,50 @@ export default function App() {
   const [materialsLoading, setMaterialsLoading] = useState(false);
   const [materialsError, setMaterialsError] = useState('');
   const materialsSearchDebounce = useRef(null);
+  // ===== Infinite scroll guards and sentinel =====
+  const worksLoadMoreLock = useRef(false);
+  const materialsLoadMoreLock = useRef(false);
+  const requestMoreWorks = useCallback(() => {
+    if (worksLoading || worksLoadMoreLock.current || !worksHasMore) return;
+    worksLoadMoreLock.current = true;
+    setWorksPage((p) => p + 1);
+  }, [worksLoading, worksHasMore]);
+  const requestMoreMaterials = useCallback(() => {
+    if (materialsLoading || materialsLoadMoreLock.current || !materialsHasMore) return;
+    materialsLoadMoreLock.current = true;
+    setMaterialsPage((p) => p + 1);
+  }, [materialsLoading, materialsHasMore]);
+  useEffect(() => { if (!worksLoading) worksLoadMoreLock.current = false; }, [worksLoading]);
+  useEffect(() => { if (!materialsLoading) materialsLoadMoreLock.current = false; }, [materialsLoading]);
+
+  const EndSentinel = ({ onReachEnd, colSpan = 1, label = 'Загрузка…' }) => {
+    const ref = useRef(null);
+    useEffect(() => {
+      const el = ref.current;
+      if (!el) return;
+      let triggered = false;
+      const io = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting && !triggered) {
+            triggered = true;
+            onReachEnd?.();
+            setTimeout(() => { triggered = false; }, 800);
+          }
+        }
+      }, { root: null, threshold: 0.1 });
+      io.observe(el);
+      return () => io.disconnect();
+    }, [onReachEnd]);
+    return (
+      <tr ref={ref} role="row">
+        <td role="cell" colSpan={colSpan} className="px-4 py-4 text-center text-sm text-gray-500">{label}</td>
+      </tr>
+    );
+  };
   // ===== Calc template blocks (эталонные блоки) =====
   const [calcBlocks, setCalcBlocks] = useState([]); // [{id, groupName, work:{}, materials:[{}}]]
+  const CALC_PAGE_BLOCKS = 30;
+  const [calcVisibleBlocks, setCalcVisibleBlocks] = useState(CALC_PAGE_BLOCKS);
   // Состояние сохранения сметы
   const [estimateSaving, setEstimateSaving] = useState(false);
   const [estimateSavedAt, setEstimateSavedAt] = useState(null); // Date
@@ -205,6 +246,8 @@ export default function App() {
             }))
           }));
           setCalcBlocks(blocks);
+          // Ограничим первоначально видимые блоки
+          setCalcVisibleBlocks((prev) => Math.min(Math.max(prev, CALC_PAGE_BLOCKS), blocks.length || CALC_PAGE_BLOCKS));
         }
       } catch {}
       finally {
@@ -214,6 +257,16 @@ export default function App() {
     })();
     return () => { aborted = true; };
   }, [active]);
+
+  // Следим за длиной списка блоков, чтобы не выходить за пределы
+  useEffect(() => {
+    setCalcVisibleBlocks((prev) => Math.min(prev, calcBlocks.length));
+  }, [calcBlocks.length]);
+
+  const requestMoreCalc = useCallback(() => {
+    if (calcVisibleBlocks >= calcBlocks.length) return;
+    setCalcVisibleBlocks((v) => Math.min(v + CALC_PAGE_BLOCKS, calcBlocks.length));
+  }, [calcVisibleBlocks, calcBlocks.length]);
 
   // Автосохранение сметы (debounce 1000ms)
   useEffect(() => {
@@ -788,7 +841,7 @@ export default function App() {
                 </div>
               </div>
               <div className="overflow-x-auto">
-        <table className="w-full" style={{ tableLayout: 'fixed' }}>
+  <table className="w-full" style={{ tableLayout: 'fixed' }}>
                   <colgroup>
           {/* Ширины столбцов берутся из calcColWidths (см. верх файла). Меняйте там числа — обновится таблица. */}
                     <col style={{ width: calcColWidths.idx }} />
@@ -801,31 +854,27 @@ export default function App() {
                     <col style={{ width: calcColWidths.labor }} />
                     <col style={{ width: calcColWidths.actions }} />
                   </colgroup>
-                  <thead className="bg-gray-50 text-left">
+                  <thead className="bg-gray-50 text-left sticky-thead">
                     <tr>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">№</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">Наименование работ</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">Изображение</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">Ед. изм.</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">Кол-во</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">На единицу</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">Материалы</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">Оплата труда</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm">Действия</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">№</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Наименование работ</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Изображение</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Ед. изм.</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Кол-во</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">На единицу</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Материалы</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Оплата труда</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Действия</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {calcBlocks.length === 0 && (
-                      <tr>
-                        <td colSpan={9} className="px-4 py-6 text-center text-sm text-gray-400">Нет блоков. Нажмите «Добавить».</td>
-                      </tr>
-                    )}
-                    {(() => {
-                      // Сортировка и группировка как в справочнике: stage -> (works без substage) -> substages -> works
+                  <VirtualizedTBody
+                    rows={useMemo(() => {
+                      if (!calcBlocks.length) return [{ kind: 'empty', key: 'empty' }];
+                      const blocksSlice = calcBlocks.slice(0, calcVisibleBlocks);
                       const natural = (a,b)=> String(a||'').localeCompare(String(b||''),'ru',{numeric:true,sensitivity:'base'});
                       const stagesMap = new Map();
                       const orphan = [];
-                      for (const b of calcBlocks) {
+                      for (const b of blocksSlice) {
                         const st = b.work.stage_id || null;
                         const ss = b.work.substage_id || null;
                         if (!st) { orphan.push(b); continue; }
@@ -839,45 +888,157 @@ export default function App() {
                         }
                       }
                       const stageKeys = Array.from(stagesMap.keys()).sort(natural);
-                      let rowIndex = 0; // выдаём порядковые номера
-                      const rows = [];
+                      const out = [];
                       for (const stId of stageKeys) {
                         const stage = stagesMap.get(stId);
                         const stageTitle = groupTitles[stId] || stage.stage_name || stId;
-                        rows.push(<tr key={'stage_'+stId} className="bg-primary-50 font-bold text-gray-700"><td className="px-2 py-2 text-gray-800">{stId}</td><td className="px-2 py-2 text-gray-800" colSpan={8}>{stageTitle}</td></tr>);
-                        // works without substage
+                        out.push({ kind:'stage-header', key:'stage_'+stId, stId, title: stageTitle });
                         stage.works.sort((a,b)=> natural(a.work.code,b.work.code));
                         for (const wb of stage.works) {
-                          const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
-                          const matsTotal = wb.materials.reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
-                          rows.push(renderWorkRow(wb, rowIndex, workSum, matsTotal));
+                          out.push({ kind:'block', key:'blk_'+wb.id, block: wb });
                         }
-                        // substages
                         const subKeys = Array.from(stage.substages.keys()).sort(natural);
                         for (const ssId of subKeys) {
                           const ss = stage.substages.get(ssId);
                           const subTitle = groupTitles[ssId] || ss.substage_name || ssId;
-                          rows.push(<tr key={'sub_'+stId+'_'+ssId} className="bg-purple-50 font-semibold text-gray-700"><td className="px-2 py-2 text-gray-800">{ssId}</td><td className="px-2 py-2 text-gray-800" colSpan={8}>{subTitle}</td></tr>);
+                          out.push({ kind:'sub-header', key:'sub_'+stId+'_'+ssId, stId, ssId, title: subTitle });
                           ss.works.sort((a,b)=> natural(a.work.code,b.work.code));
                           for (const wb of ss.works) {
-                            const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
-                            const matsTotal = wb.materials.reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
-                            rows.push(renderWorkRow(wb, rowIndex, workSum, matsTotal));
+                            out.push({ kind:'block', key:'blk_'+wb.id, block: wb });
                           }
                         }
                       }
                       if (orphan.length) {
                         orphan.sort((a,b)=> natural(a.work.code,b.work.code));
-                        rows.push(<tr key='orph' className="bg-primary-50 font-bold text-gray-700"><td className="px-2 py-2 text-gray-800">—</td><td className="px-2 py-2 text-gray-800" colSpan={8}>Прочее</td></tr>);
-                        for (const wb of orphan) {
-                          const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
-                          const matsTotal = wb.materials.reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
-                          rows.push(renderWorkRow(wb, rowIndex, workSum, matsTotal));
-                        }
+                        out.push({ kind:'stage-header', key:'orph', stId:'—', title:'Прочее' });
+                        for (const wb of orphan) out.push({ kind:'block', key:'blk_'+wb.id, block: wb });
                       }
-                      return rows;
-                    })()}
-                  </tbody>
+                      // Добавим loader, если не все блоки показаны
+                      const hasMore = calcVisibleBlocks < calcBlocks.length;
+                      return hasMore ? [...out, { kind:'loader', key:'calc_loader' }] : out;
+                    }, [calcBlocks, calcVisibleBlocks, groupTitles])}
+                    colCount={9}
+                    overscan={overscanDefaults.calc}
+                    getRowKey={(row) => row.key}
+                    estimateSize={(row) => {
+                      if (row.kind === 'empty') return 60;
+                      if (row.kind === 'stage-header' || row.kind === 'sub-header') return 36;
+                      if (row.kind === 'loader') return 52;
+                      if (row.kind === 'block') {
+                        const m = row.block.materials?.length || 0;
+                        return calcRowHeights.work + m*calcRowHeights.material + calcRowHeights.total;
+                      }
+                      return 44;
+                    }}
+                    renderRow={(row, i, { measureRef, ariaRowIndex }) => {
+                      if (row.kind === 'empty') {
+                        return (
+                          <tr ref={measureRef} key="empty" role="row" aria-rowindex={ariaRowIndex}>
+                            <td role="cell" colSpan={9} className="px-4 py-6 text-center text-sm text-gray-400">Нет блоков. Нажмите «Добавить».</td>
+                          </tr>
+                        );
+                      }
+                      if (row.kind === 'loader') {
+                        return (
+                          <EndSentinel key={row.key} onReachEnd={requestMoreCalc} colSpan={9} label={'Загрузить ещё'} />
+                        );
+                      }
+                      if (row.kind === 'stage-header') {
+                        return (
+                          <tr ref={measureRef} key={row.key} className="bg-primary-50 font-bold text-gray-700" role="row" aria-rowindex={ariaRowIndex}>
+                            <td role="cell" className="px-2 py-2 text-gray-800">{row.stId}</td>
+                            <td role="cell" className="px-2 py-2 text-gray-800" colSpan={8}>{row.title}</td>
+                          </tr>
+                        );
+                      }
+                      if (row.kind === 'sub-header') {
+                        return (
+                          <tr ref={measureRef} key={row.key} className="bg-purple-50 font-semibold text-gray-700" role="row" aria-rowindex={ariaRowIndex}>
+                            <td role="cell" className="px-2 py-2 text-gray-800">{row.ssId}</td>
+                            <td role="cell" className="px-2 py-2 text-gray-800" colSpan={8}>{row.title}</td>
+                          </tr>
+                        );
+                      }
+                      if (row.kind === 'block') {
+                        const wb = row.block;
+                        const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
+                        const matsTotal = (wb.materials||[]).reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
+                        const onUpd = (fn) => updateBlock(wb.id, fn);
+                        const onRemove = () => setCalcBlocks(prev => prev.filter(b => b.id !== wb.id));
+                        return (
+                          <React.Fragment key={row.key}>
+                            <tr style={{ height: calcRowHeights.work }} role="row" aria-rowindex={ariaRowIndex}>
+                              <td role="cell" className="px-2 py-2 text-gray-800">{wb.work.code}</td>
+                              <td role="cell" className="px-2 py-2 text-gray-800">
+                                <input
+                                  value={wb.work.name}
+                                  placeholder="Наименование работы"
+                                  onChange={(e)=> onUpd(b=> ({...b, work:{...b.work, name:e.target.value}}))}
+                                  className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                />
+                              </td>
+                              <td role="cell" className="px-2 py-2"></td>
+                              <td role="cell" className="px-2 py-2 text-gray-800">
+                                <input value={wb.work.unit} placeholder="ед" onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit:e.target.value}}))} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                              </td>
+                              <td role="cell" className="px-2 py-2 text-gray-800">
+                                <input value={wb.work.quantity} placeholder="0" onChange={(e)=> onUpd(o=>({...o, work:{...o.work, quantity:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                              </td>
+                              <td role="cell" className="px-2 py-2 text-gray-800">
+                                <input value={wb.work.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit_price:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                              </td>
+                              <td role="cell" className="px-2 py-2 text-gray-800">—</td>
+                              <td role="cell" className="px-2 py-2 font-semibold text-right text-gray-800">{workSum ? workSum.toFixed(2) : '—'}</td>
+                              <td role="cell" className="px-2 py-2">
+                                <button onClick={()=> onUpd(o=>({...o, materials:[...o.materials, { name:'', unit:'', quantity:'', unit_price:'', total:'' }]}))} className="bg-primary-50 text-primary-600 px-2 py-1 rounded text-xs mr-2">+ Материал</button>
+                              </td>
+                            </tr>
+                            {(wb.materials||[]).map((m, mi) => {
+                              const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
+                              return (
+                                <tr key={row.key+':m:'+mi} style={{ height: calcRowHeights.material }} role="row" aria-rowindex={ariaRowIndex+1+mi}>
+                                  <td role="cell" className="px-2 py-2 text-gray-800"></td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800">
+                                    <input value={m.name} placeholder="Материал" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                  </td>
+                                  <td role="cell" className="px-2 py-2">
+                                    {m.image_url ? (
+                                      <img src={m.image_url} alt="img" className="rounded border object-cover" style={getPreviewStyle('calcMaterial')} onError={(e)=>{e.currentTarget.style.display='none';}} />
+                                    ) : null}
+                                  </td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800">
+                                    <input value={m.unit} placeholder="ед" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                  </td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800">
+                                    <input value={m.quantity} placeholder="0" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                  </td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800">
+                                    <input value={m.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                  </td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800">{matSum? matSum.toFixed(2): '—'}</td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800">—</td>
+                                  <td role="cell" className="px-2 py-2 text-right">
+                                    {wb.materials.length>1 && (
+                                      <button onClick={()=> onUpd(o=>({...o, materials: o.materials.filter((_,j)=> j!==mi)}))} className="text-gray-400 hover:text-red-600 text-xs">Удалить</button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            <tr className="bg-gray-50 font-semibold" role="row" aria-rowindex={ariaRowIndex + 1 + (wb.materials?.length || 0)} style={{ height: calcRowHeights.total }}>
+                              <td role="cell" className="px-2 py-2 text-gray-800" colSpan={6}>ИТОГО ПО ГРУППЕ:</td>
+                              <td role="cell" className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
+                              <td role="cell" className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
+                              <td role="cell" className="px-2 py-2 text-right">
+                                <button onClick={onRemove} className="text-gray-400 hover:text-red-600 text-xs">Удалить блок</button>
+                              </td>
+                            </tr>
+                          </React.Fragment>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
                 </table>
               </div>
             </div>
@@ -1241,46 +1402,58 @@ export default function App() {
                     <col style={{ width: colWidths.price }} />
                     <col style={{ width: colWidths.action }} />
                   </colgroup>
-                  <thead className="bg-gray-50 text-left">
+                  <thead className="bg-gray-50 text-left sticky-thead">
                     <tr>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Код</th>
-                      <th className="py-2 pl-1 pr-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Ед.изм.</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Цена руб.</th>
-                      <th className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Код</th>
+                      <th role="columnheader" className="py-2 pl-1 pr-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Ед.изм.</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Цена руб.</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {works
-                      .filter((w) => {
-                        // показываем строку, если все её родители не свернуты
+                  <VirtualizedTBody
+                    rows={useMemo(() => {
+                      const visible = works.filter((w) => {
                         if (!w.parents || w.parents.length === 0) return true;
-                        for (const p of w.parents) {
-                          if (collapsed[p]) return false;
-                        }
+                        for (const p of w.parents) { if (collapsed[p]) return false; }
                         return true;
-                      })
-                      .filter(w => !(w.type==='group' && w.level==='phase'))
-                      .map((w, i) => (
-                      w.type === 'group' ? (
-                        <tr key={`g-${i}`} className="bg-primary-50 font-bold text-gray-700">
-                          <td className="px-2 py-2 text-gray-800" colSpan={5}>
-                            <div className="flex items-center gap-2">
-                              <button
-                                className={`group-toggle-btn ${collapsed[w.code] ? 'collapsed' : ''}`}
-                                title={collapsed[w.code] ? 'Развернуть' : 'Свернуть'}
-                                onClick={() => setCollapsed((prev) => ({ ...prev, [w.code]: !prev[w.code] }))}
-                              >
-                                <span className="material-symbols-outlined text-[18px] align-middle">{collapsed[w.code] ? 'chevron_right' : 'expand_more'}</span>
-                              </button>
-                              <span className="group-title-text">{w.title}</span>
-                              {w.code && <span className="text-xs font-normal text-gray-500">({w.code})</span>}
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        <tr key={`i-${i}`}>
-                          <td className="px-2 py-2 text-gray-800">
+                      }).filter(w => !(w.type==='group' && w.level==='phase'));
+                      const base = visible.map(w => ({ kind: w.type === 'group' ? 'group' : 'item', data: w, key: (w.type==='group' ? 'g:' : 'i:') + (w.code || w.title) }));
+                      return worksHasMore ? [...base, { kind: 'loader', key: 'works_loader' }] : base;
+                    }, [works, collapsed, worksHasMore])}
+                    colCount={5}
+                    overscan={overscanDefaults.refs}
+                    estimateSize={(row) => row.kind === 'group' ? 40 : 52}
+                    getRowKey={(row) => row.key}
+                    renderRow={(row, i, { measureRef }) => {
+                      const w = row.data;
+                      if (row.kind === 'loader') {
+                        return (
+                          <EndSentinel key={row.key} onReachEnd={requestMoreWorks} colSpan={5} label={worksLoading ? 'Загрузка…' : 'Загрузить ещё'} />
+                        );
+                      }
+                      if (row.kind === 'group') {
+                        return (
+                          <tr ref={measureRef} key={row.key} className="bg-primary-50 font-bold text-gray-700" role="row" aria-rowindex={i+1}>
+                            <td role="cell" className="px-2 py-2 text-gray-800" colSpan={5}>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  className={`group-toggle-btn ${collapsed[w.code] ? 'collapsed' : ''}`}
+                                  title={collapsed[w.code] ? 'Развернуть' : 'Свернуть'}
+                                  onClick={() => setCollapsed((prev) => ({ ...prev, [w.code]: !prev[w.code] }))}
+                                >
+                                  <span className="material-symbols-outlined text-[18px] align-middle">{collapsed[w.code] ? 'chevron_right' : 'expand_more'}</span>
+                                </button>
+                                <span className="group-title-text">{w.title}</span>
+                                {w.code && <span className="text-xs font-normal text-gray-500">({w.code})</span>}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      }
+                      return (
+                        <tr ref={measureRef} key={row.key} role="row" aria-rowindex={i+1}>
+                          <td role="cell" className="px-2 py-2 text-gray-800">
                             <input
                               className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
                               value={w.code}
@@ -1288,7 +1461,7 @@ export default function App() {
                               onChange={(e) => updateWork(w.code, 'code', e.target.value)}
                             />
                           </td>
-                          <td className="pl-1 pr-2 py-2 text-gray-800 align-top" style={{whiteSpace:'normal', wordBreak:'break-word'}}>
+                          <td role="cell" className="pl-1 pr-2 py-2 text-gray-800 align-top" style={{whiteSpace:'normal', wordBreak:'break-word'}}>
                             <textarea
                               className="w-full bg-transparent py-1 px-2 text-sm resize-none leading-snug"
                               value={w.name}
@@ -1297,7 +1470,7 @@ export default function App() {
                               ref={(el)=> el && autoGrow(el)}
                             />
                           </td>
-                          <td className="px-2 py-2 text-gray-800">
+                          <td role="cell" className="px-2 py-2 text-gray-800">
                             <input
                               className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
                               value={w.unit}
@@ -1305,7 +1478,7 @@ export default function App() {
                               onChange={(e) => updateWork(w.code, 'unit', e.target.value)}
                             />
                           </td>
-                          <td className="px-2 py-2 text-gray-800">
+                          <td role="cell" className="px-2 py-2 text-gray-800">
                             <input
                               className="work-table-input w-full bg-transparent py-1 px-2 text-sm"
                               value={(w.price ?? '')}
@@ -1313,9 +1486,8 @@ export default function App() {
                               onChange={(e) => updateWork(w.code, 'price', e.target.value)}
                             />
                           </td>
-                          <td className="px-2 py-2 text-right">
+                          <td role="cell" className="px-2 py-2 text-right">
                             <div className="flex items-center justify-end gap-1">
-                              {/* Индикатор сохранения */}
                               {w._dirty && (
                                 <span className="material-symbols-outlined text-yellow-600 animate-pulse" title="Изменения сохраняются">hourglass_empty</span>
                               )}
@@ -1329,26 +1501,12 @@ export default function App() {
                             </div>
                           </td>
                         </tr>
-                      )
-                    ))}
-                  </tbody>
+                      );
+                    }}
+                  />
                 </table>
               </div>
-              {worksHasMore && (
-                <div className="p-4 flex items-center justify-center border-t border-gray-100">
-                  <button
-                    className="px-6 py-2.5 rounded-lg text-sm font-medium bg-primary-50 text-primary-700 border border-primary-200 hover:bg-primary-100 disabled:opacity-50 shadow-sm flex items-center justify-center gap-2 transition-colors"
-                    style={{ minWidth: 240 }}
-                    disabled={worksLoading}
-                    onClick={() => setWorksPage(p => p + 1)}
-                  >
-                    {worksLoading && (
-                      <span className="material-symbols-outlined text-base animate-spin-slow" style={{fontSize:16}}>progress_activity</span>
-                    )}
-                    <span>{worksLoading ? 'Загрузка…' : `Показать ещё ${WORKS_PAGE_SIZE} строк`}</span>
-                  </button>
-                </div>
-              )}
+              {/* Кнопка догрузки заменена на автоподгрузку при скролле */}
             </div>
             ) : (
               <div className="bg-white rounded-xl shadow-sm overflow-hidden">
@@ -1420,7 +1578,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {materialsLoading && (<div className="p-3 text-sm text-gray-500">Загрузка…</div>)}
+                {materialsLoading && materialsPage === 1 && (<div className="p-3 text-sm text-gray-500">Загрузка…</div>)}
                 {materialsError && (
                   <div className="p-3 text-sm text-red-600 flex items-center gap-3">
                     <span>{materialsError}</span>
@@ -1443,126 +1601,125 @@ export default function App() {
                       <col style={{ width: materialsColWidths.item }} />
                       <col style={{ width: materialsColWidths.action }} />
                     </colgroup>
-                    <thead className="bg-gray-50 text-left">
+                    <thead className="bg-gray-50 text-left sticky-thead">
                       <tr>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">ID</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Ед.</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Цена</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Расход</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Вес</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Изображение</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Item URL</th>
-                        <th className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">ID</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Наименование</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Ед.</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Цена</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Расход</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Вес</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Изображение</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm select-none">Item URL</th>
+                        <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm text-right"></th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {materials.map(m => (
-                        <tr key={m._rowId} className={m._isNew ? 'bg-yellow-50' : ''}>
-                          <td className="px-2 py-2 text-gray-800">
-                            <input
-                              className="w-full bg-transparent py-1 px-2 text-sm"
-                              value={m.id}
-                              placeholder="ID"
-                              onChange={(e)=> updateMaterial(m._rowId,'id', e.target.value)}
-                              disabled={!m._isNew}
-                            />
-                          </td>
-                          <td className="px-2 py-2 text-gray-800 align-top" style={{whiteSpace:'normal', wordBreak:'break-word'}}>
-                            <textarea
-                              className="w-full bg-transparent py-1 px-2 text-sm resize-none leading-snug"
-                              value={m.name||''}
-                              placeholder="Наименование"
-                              onChange={(e)=> { updateMaterial(m._rowId,'name', e.target.value); autoGrow(e.target); }}
-                              ref={(el)=> el && autoGrow(el)}
-                            />
-                          </td>
-                          <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.unit||''} placeholder="Ед." onChange={(e)=> updateMaterial(m._rowId,'unit', e.target.value)} />
-                          </td>
-                          <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.unit_price??''} placeholder="Цена" onChange={(e)=> updateMaterial(m._rowId,'unit_price', e.target.value)} />
-                          </td>
-                          <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.expenditure??''} placeholder="Расход" onChange={(e)=> updateMaterial(m._rowId,'expenditure', e.target.value)} />
-                          </td>
-                          <td className="px-2 py-2 text-gray-800">
-                            <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.weight??''} placeholder="Вес" onChange={(e)=> updateMaterial(m._rowId,'weight', e.target.value)} />
-                          </td>
-                          <td className="px-2 py-2 text-gray-800">
-                            {m.image_url ? (
-                              <div className="flex items-center gap-2">
-                                <a href={m.image_url} target="_blank" rel="noopener noreferrer" className="block group">
-                                  <img
-                                    src={m.image_url}
-                                    alt="preview"
-                                    className="object-cover rounded border border-gray-200 bg-white group-hover:shadow"
-                                    style={getPreviewStyle('refMaterial')}
-                                    onError={(e)=>{ e.currentTarget.style.display='none'; }}
-                                  />
-                                </a>
-                                {/* Удалены кнопки удаления/замены изображения по требованию */}
+                    <VirtualizedTBody
+                      rows={useMemo(() => {
+                        const base = materials.map(m => ({ key: m._rowId, data: m }));
+                        return materialsHasMore ? [...base, { key: 'materials_loader', kind: 'loader' }] : base;
+                      }, [materials, materialsHasMore])}
+                      colCount={9}
+                      overscan={overscanDefaults.refs}
+                      estimateSize={(row) => row?.kind === 'loader' ? 56 : 56}
+                      getRowKey={(row) => row.key}
+                      renderRow={(row, i, { measureRef }) => {
+                        if (row.kind === 'loader') {
+                          return (
+                            <EndSentinel key={row.key} onReachEnd={requestMoreMaterials} colSpan={9} label={materialsLoading ? 'Загрузка…' : 'Загрузить ещё'} />
+                          );
+                        }
+                        const m = row.data;
+                        return (
+                          <tr ref={measureRef} key={row.key} className={m._isNew ? 'bg-yellow-50' : ''} role="row" aria-rowindex={i+1}>
+                            <td role="cell" className="px-2 py-2 text-gray-800">
+                              <input
+                                className="w-full bg-transparent py-1 px-2 text-sm"
+                                value={m.id}
+                                placeholder="ID"
+                                onChange={(e)=> updateMaterial(m._rowId,'id', e.target.value)}
+                                disabled={!m._isNew}
+                              />
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-gray-800 align-top" style={{whiteSpace:'normal', wordBreak:'break-word'}}>
+                              <textarea
+                                className="w-full bg-transparent py-1 px-2 text-sm resize-none leading-snug"
+                                value={m.name||''}
+                                placeholder="Наименование"
+                                onChange={(e)=> { updateMaterial(m._rowId,'name', e.target.value); autoGrow(e.target); }}
+                                ref={(el)=> el && autoGrow(el)}
+                              />
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-gray-800">
+                              <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.unit||''} placeholder="Ед." onChange={(e)=> updateMaterial(m._rowId,'unit', e.target.value)} />
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-gray-800">
+                              <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.unit_price??''} placeholder="Цена" onChange={(e)=> updateMaterial(m._rowId,'unit_price', e.target.value)} />
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-gray-800">
+                              <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.expenditure??''} placeholder="Расход" onChange={(e)=> updateMaterial(m._rowId,'expenditure', e.target.value)} />
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-gray-800">
+                              <input className="w-full bg-transparent py-1 px-2 text-sm" value={m.weight??''} placeholder="Вес" onChange={(e)=> updateMaterial(m._rowId,'weight', e.target.value)} />
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-gray-800">
+                              {m.image_url ? (
+                                <div className="flex items-center gap-2">
+                                  <a href={m.image_url} target="_blank" rel="noopener noreferrer" className="block group">
+                                    <img
+                                      src={m.image_url}
+                                      alt="preview"
+                                      className="object-cover rounded border border-gray-200 bg-white group-hover:shadow"
+                                      style={getPreviewStyle('refMaterial')}
+                                      onError={(e)=>{ e.currentTarget.style.display='none'; }}
+                                    />
+                                  </a>
+                                </div>
+                              ) : (
+                                <button
+                                  className="text-xs text-primary-600 hover:underline"
+                                  onClick={()=> {
+                                    const url = prompt('Вставьте URL изображения','');
+                                    if (url != null) updateMaterial(m._rowId,'image_url', url.trim());
+                                  }}
+                                >+ изображение</button>
+                              )}
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-gray-800">
+                              {m.item_url ? (
+                                <div className="flex items-center gap-2">
+                                  <a
+                                    href={m.item_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center justify-center h-7 w-7 rounded hover:bg-primary-50 text-primary-600 hover:text-primary-700 transition-colors"
+                                    title={m.item_url}
+                                  >
+                                    <span className="material-symbols-outlined text-base">open_in_new</span>
+                                  </a>
+                                </div>
+                              ) : (
+                                <button
+                                  className="text-xs text-primary-600 hover:underline"
+                                  onClick={()=> { const v = prompt('Введите URL на товар',''); if (v) updateMaterial(m._rowId,'item_url', v.trim()); }}
+                                >+ ссылка</button>
+                              )}
+                            </td>
+                            <td role="cell" className="px-2 py-2 text-right">
+                              <div className="flex items-center justify-end gap-1">
+                                {m._dirty && (<span className="material-symbols-outlined text-yellow-600 animate-pulse" title="Изменения сохраняются">hourglass_empty</span>)}
+                                <button className="text-gray-500 hover:text-red-600 p-1" title="Удалить" onClick={()=> deleteMaterial(m)}>
+                                  <span className="material-symbols-outlined">delete</span>
+                                </button>
                               </div>
-                            ) : (
-                              <button
-
-                                className="text-xs text-primary-600 hover:underline"
-                                onClick={()=> {
-                                  const url = prompt('Вставьте URL изображения','');
-                                  if (url != null) updateMaterial(m._rowId,'image_url', url.trim());
-                                }}
-                              >+ изображение</button>
-                            )}
-                          </td>
-                          <td className="px-2 py-2 text-gray-800">
-                            {m.item_url ? (
-                              <div className="flex items-center gap-2">
-                                <a
-                                  href={m.item_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center justify-center h-7 w-7 rounded hover:bg-primary-50 text-primary-600 hover:text-primary-700 transition-colors"
-                                  title={m.item_url}
-                                >
-                                  <span className="material-symbols-outlined text-base">open_in_new</span>
-                                </a>
-                                {/* Удалены кнопки удаления/изменения ссылки по требованию */}
-                              </div>
-                            ) : (
-                              <button
-                                className="text-xs text-primary-600 hover:underline"
-                                onClick={()=> { const v = prompt('Введите URL на товар',''); if (v) updateMaterial(m._rowId,'item_url', v.trim()); }}
-                              >+ ссылка</button>
-                            )}
-                          </td>
-                          <td className="px-2 py-2 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              {m._dirty && (<span className="material-symbols-outlined text-yellow-600 animate-pulse" title="Изменения сохраняются">hourglass_empty</span>)}
-                              <button className="text-gray-500 hover:text-red-600 p-1" title="Удалить" onClick={()=> deleteMaterial(m)}>
-                                <span className="material-symbols-outlined">delete</span>
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
+                            </td>
+                          </tr>
+                        );
+                      }}
+                    />
                   </table>
                 </div>
-                {materialsHasMore && (
-                  <div className="p-4 flex items-center justify-center border-t border-gray-100">
-                    <button
-                      className="px-6 py-2.5 rounded-lg text-sm font-medium bg-primary-50 text-primary-700 border border-primary-200 hover:bg-primary-100 disabled:opacity-50 shadow-sm flex items-center justify-center gap-2 transition-colors"
-                      style={{ minWidth: 240 }}
-                      disabled={materialsLoading}
-                      onClick={() => setMaterialsPage(p => p + 1)}
-                    >
-                      {materialsLoading && (
-                        <span className="material-symbols-outlined text-base animate-spin-slow" style={{fontSize:16}}>progress_activity</span>
-                      )}
-                      <span>{materialsLoading ? 'Загрузка…' : `Показать ещё ${MATERIALS_PAGE_SIZE} строк`}</span>
-                    </button>
-                  </div>
-                )}
+                {/* Кнопка догрузки заменена на автоподгрузку при скролле */}
               </div>
             )}
           </div>

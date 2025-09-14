@@ -11,14 +11,15 @@
     "import:bdwm": "node server/import_bdwm.js",
     "health": "node scripts/http_health.mjs",
     "import:http": "node scripts/http_import.mjs",
-  "check:materials": "node server/check_materials.js",
-  "import:wm": "node server/import_work_materials_cli.js work_materials.strict.cleaned.csv",
+    "check:materials": "node server/check_materials.js",
+    "import:wm": "node server/import_work_materials_cli.js work_materials.strict.cleaned.csv",
     "dev:all": "concurrently -k -n VITE,API -c green,blue \"npm:dev\" \"npm:dev:api\"",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.13.12",
     "cors": "^2.8.5",
     "csv-parse": "^5.6.0",
     "dotenv": "^16.4.5",

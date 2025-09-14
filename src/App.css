@@ -40,3 +40,11 @@
 .read-the-docs {
   color: #888;
 }
+
+/* Sticky header для таблиц */
+.sticky-thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #f9fafb; /* bg-gray-50 */
+}
