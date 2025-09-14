@@ -45,6 +45,7 @@ import AddWorkModal from './components/AddWorkModal.tsx';
 import { Label, Input, Button } from './components/ui/form';
 import FloatingWindow from './components/ui/FloatingWindow.jsx';
 import VirtualizedTBody from './components/VirtualizedTBody.jsx';
+import MaterialAutocomplete from './components/MaterialAutocomplete.jsx';
 import { rowHeights as _rowHeights, overscanDefaults } from './virtualizationConfig.js';
 import { exportToCSV } from './utils/exporters.js';
 
@@ -1252,15 +1253,42 @@ export default function App() {
                                 <tr key={row.key+':m:'+mi} role="row" aria-rowindex={ariaRowIndex+1+mi}>
                                   <td role="cell" className="px-2 py-2 text-gray-800"></td>
                                   <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
-                                    <textarea
-                                      rows={1}
-                                      value={m.name}
-                                      placeholder="Материал"
-                                      onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; })}
-                                      onInput={(e)=> { const el=e.currentTarget; el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; }}
-                                      ref={(el)=> { if (el) { el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; } }}
-                                      className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none"
-                                      style={{ whiteSpace: 'normal', wordBreak: 'break-word', overflowY: 'hidden', resize: 'none' }}
+                                    <MaterialAutocomplete
+                                      value={{ id: m.code, name: m.name }}
+                                      currentId={m.code}
+                                      onSelect={async (mat)=>{
+                                        let prev;
+                                        onUpd(o=>{
+                                          const ms = [...o.materials];
+                                          prev = ms[mi];
+                                          ms[mi] = {
+                                            ...ms[mi],
+                                            code: mat.id,
+                                            name: mat.name,
+                                            unit: mat.unit || '',
+                                            unit_price: mat.unit_price!=null? String(mat.unit_price):'',
+                                            image_url: mat.image || '',
+                                            sku: mat.sku || mat.id
+                                          };
+                                          return { ...o, materials: ms };
+                                        });
+                                        // try to sync with backend snapshot if we have a persisted id
+                                        try {
+                                          if (row && row.kind === 'block') {
+                                            // no direct id here; server-side linkage is in estimate snapshot outside of this component
+                                            // Keeping ECONOMY: rely on snapshot save debounce rather than immediate PATCH
+                                            await saveEstimateSnapshot();
+                                          }
+                                        } catch (e) {
+                                          // rollback
+                                          onUpd(o=>{
+                                            const ms = [...o.materials];
+                                            ms[mi] = prev;
+                                            return { ...o, materials: ms };
+                                          });
+                                          alert('Не удалось применить материал: '+(e.message||e));
+                                        }
+                                      }}
                                     />
                                   </td>
                                   <td role="cell" className="px-2 py-2">
@@ -2039,7 +2067,7 @@ function renderWorkRow(block, groupIndex, workSum, matsTotal) {
         </td>
       </tr>
       {block.materials.map((m, mi) => {
-        const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
+                              const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
         return (
       <tr key={mi}>
             <td className="px-2 py-2 text-gray-800"></td>

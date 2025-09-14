@@ -241,6 +241,30 @@ app.get('/api/materials', async (req, res) => {
     res.json({ items: rows, page, limit, total, hasMore: offset + rows.length < total, q: qRaw || undefined });
   } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
 });
+
+// Search materials by name or id (sku-like). Returns array of items.
+app.get('/api/materials/search', async (req, res) => {
+  try {
+    const qRaw = ((req.query.q || '') + '').trim();
+    const limitRaw = parseInt(req.query.limit) || 20;
+    const limit = Math.min(50, Math.max(1, limitRaw));
+    if (qRaw.length < 2) return res.json([]);
+    const q = '%' + qRaw.toLowerCase() + '%';
+    const { rows } = await pool.query(
+      `select id, name, unit, unit_price, image_url as image
+       from materials
+       where lower(name) like $1 or lower(id) like $1
+       order by id
+       limit ${limit}`,
+      [q]
+    );
+    // Add sku alias (fallback to id)
+    const items = rows.map(r => ({ ...r, sku: r.id }));
+    res.json(items);
+  } catch (e) {
+    res.status(500).json({ ok:false, error: e.message });
+  }
+});
 // Get single material
 app.get('/api/materials/:id', async (req, res) => {
   try {
@@ -936,12 +960,28 @@ app.post('/api/estimate-items/:itemId/materials', async (req,res) => {
 });
 app.patch('/api/estimate-item-materials/:id', async (req,res) => {
   const { id } = req.params;
-  const { consumption_per_work_unit, waste_coeff, quantity, unit_price, material_name, sort_order } = req.body || {};
+  const { consumption_per_work_unit, waste_coeff, quantity, unit_price, material_name, sort_order, material_id } = req.body || {};
   const sets=[]; const args=[];
+  // If material_id is provided, validate and snap unit/price from reference
+  if (material_id !== undefined) {
+    try {
+      const m = await pool.query('select id,name,unit,unit_price,image_url from materials where id=$1', [material_id]);
+      if (!m.rows.length) return res.status(400).json({ ok:false, error:'material_id not found' });
+      const mm = m.rows[0];
+      // apply snapshot fields
+      args.push(mm.id); sets.push(`material_id=$${args.length}`);
+      args.push(mm.id); sets.push(`material_code=$${args.length}`);
+      args.push(mm.name); sets.push(`material_name=$${args.length}`);
+      args.push(mm.unit || null); sets.push(`unit=$${args.length}`);
+      args.push(mm.unit_price == null ? null : Number(mm.unit_price)); sets.push(`unit_price=$${args.length}`);
+    } catch (e) {
+      return res.status(500).json({ ok:false, error:e.message });
+    }
+  }
   if (consumption_per_work_unit !== undefined) { const v=consumption_per_work_unit===''||consumption_per_work_unit==null?null:Number(consumption_per_work_unit); args.push(v); sets.push(`consumption_per_work_unit=$${args.length}`); }
   if (waste_coeff !== undefined) { args.push(waste_coeff==null?1:Number(waste_coeff)); sets.push(`waste_coeff=$${args.length}`); }
   if (quantity !== undefined) { const v=quantity===''||quantity==null?null:Number(quantity); args.push(v); sets.push(`quantity=$${args.length}`); }
-  if (unit_price !== undefined) { const v=unit_price===''||unit_price==null?null:Number(unit_price); args.push(v); sets.push(`unit_price=$${args.length}`); }
+  if (unit_price !== undefined && material_id === undefined) { const v=unit_price===''||unit_price==null?null:Number(unit_price); args.push(v); sets.push(`unit_price=$${args.length}`); }
   if (material_name !== undefined) { args.push(material_name); sets.push(`material_name=$${args.length}`); }
   if (sort_order !== undefined) { args.push(Number(sort_order)); sets.push(`sort_order=$${args.length}`); }
   if (!sets.length) return res.json({ ok:true, noop:true });
