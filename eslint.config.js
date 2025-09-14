@@ -26,4 +26,17 @@ export default defineConfig([
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
+  // Node-side overrides for server and scripts
+  {
+    files: ['server/**/*.{js,mjs}', 'scripts/**/*.{js,mjs}'],
+    languageOptions: {
+      globals: { ...globals.node },
+      sourceType: 'module',
+    },
+    rules: {
+      'no-empty': ['warn', { allowEmptyCatch: true }],
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^[A-Z_]' }],
+      'no-undef': 'off',
+    },
+  },
 ])

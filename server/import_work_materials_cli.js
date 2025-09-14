@@ -72,7 +72,7 @@ if (!fs.existsSync(filePath)) {
           on conflict (work_id, material_id) do update set consumption_per_work_unit=excluded.consumption_per_work_unit, waste_coeff=excluded.waste_coeff, updated_at=now() returning (xmax=0) as inserted`,
           [work_id, material_id, cpu, wc]);
         if (resUp.rows[0] && resUp.rows[0].inserted) inserted++; else updated++;
-      } catch (e) {
+      } catch {
         skipped++;
       }
     }

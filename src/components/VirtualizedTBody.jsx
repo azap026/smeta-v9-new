@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 // Находит ближайший скролл-контейнер по вертикали
@@ -62,23 +62,7 @@ export default function VirtualizedTBody({
     if (!anchorRef.current) return;
     const el = getScrollParent(anchorRef.current);
     setScrollEl(el);
-  }, [anchorRef.current]);
-
-  // Если контейнер скрыт (display:none) — переизмерим при появлении
-  useEffect(() => {
-    if (!anchorRef.current) return;
-    const root = anchorRef.current;
-    const io = new IntersectionObserver((entries) => {
-      for (const e of entries) {
-        if (e.isIntersecting) {
-          // небольшой таймаут чтобы стиль применился
-          setTimeout(() => virtualizer?.measure?.(), 0);
-        }
-      }
-    }, { root: null, threshold: 0 });
-    io.observe(root);
-    return () => io.disconnect();
-  }, [anchorRef.current]);
+  }, []);
 
   const count = rows?.length || 0;
   const virtualizer = useVirtualizer({
@@ -101,6 +85,22 @@ export default function VirtualizedTBody({
       return el.getBoundingClientRect()?.height || undefined;
     },
   });
+
+  // Если контейнер скрыт (display:none) — переизмерим при появлении
+  useEffect(() => {
+    if (!anchorRef.current) return;
+    const root = anchorRef.current;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) {
+          // небольшой таймаут чтобы стиль применился
+          setTimeout(() => virtualizer?.measure?.(), 0);
+        }
+      }
+    }, { root: null, threshold: 0 });
+    io.observe(root);
+    return () => io.disconnect();
+  }, [virtualizer]);
 
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();

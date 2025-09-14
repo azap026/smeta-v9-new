@@ -43,10 +43,26 @@ export function useMaterialSearch(query, { debounceMs = 200, limit = 20 } = {}) 
         if (cached) { setItems(cached); setError(''); return; }
         setLoading(true); setError('');
         const ctrl = new AbortController(); abortRef.current = ctrl;
-        const r = await fetch(`/api/materials/search?q=${encodeURIComponent(q)}&limit=${limit}`, { signal: ctrl.signal });
-        if (!r.ok) throw new Error('HTTP '+r.status);
-        const data = await r.json();
-        if (!Array.isArray(data)) throw new Error('Bad response');
+        const qs = `q=${encodeURIComponent(q)}&limit=${limit}`;
+        const urls = [
+          `/api/materials/search?${qs}`,
+          `http://localhost:4000/api/materials/search?${qs}`,
+          `http://127.0.0.1:4000/api/materials/search?${qs}`,
+        ];
+        let data = null, lastErr = null;
+        for (const u of urls) {
+          try {
+            const r = await fetch(u, { signal: ctrl.signal, headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+            if (!r.ok) { lastErr = new Error('HTTP '+r.status); continue; }
+            const j = await r.json();
+            if (!Array.isArray(j)) { lastErr = new Error('Bad response'); continue; }
+            data = j; break;
+          } catch (e) {
+            if (e.name === 'AbortError') throw e; // bubble
+            lastErr = e;
+          }
+        }
+        if (!data) throw lastErr || new Error('No response');
         sharedCache.set(paramsKey, data);
         setItems(data);
       } catch (e) {

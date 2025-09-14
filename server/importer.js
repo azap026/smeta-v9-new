@@ -38,7 +38,7 @@ export async function importFromCsv(filePath, client) {
     stR.rows.forEach(r=>stagesExisting.add(r.id));
     ssR.rows.forEach(r=>substagesExisting.add(r.id));
     wR.rows.forEach(r=>worksExisting.add(r.id));
-  } catch (e) {
+  } catch {
     // Non-fatal; continue without stats if fails
   }
 

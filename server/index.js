@@ -112,14 +112,14 @@ app.get('/api/works-rows', async (req, res) => {
       return av.localeCompare(bv, 'ru', { numeric: true, sensitivity: 'base' });
     };
 
-  const phaseMap = new Map(phases.map(p => [p.id, p])); // пока не используем, оставлено для будущего режима с фазами
-  const stageMap = new Map(stages.map(s => [s.id, s])); // потенциально может пригодиться при расширении
-  const subMap = new Map(substages.map(ss => [ss.id, ss]));
+  const _phaseMap = new Map(phases.map(p => [p.id, p])); // пока не используем, оставлено для будущего режима с фазами
+  const _stageMap = new Map(stages.map(s => [s.id, s])); // потенциально может пригодиться при расширении
+  const _subMap = new Map(substages.map(ss => [ss.id, ss]));
 
   // Группировки
-  const byPhaseStages = stages.reduce((m, s) => { (m[s.phase_id] ||= []).push(s); return m; }, {}); // пока не используем в сортировке
+  const _byPhaseStages = stages.reduce((m, s) => { (m[s.phase_id] ||= []).push(s); return m; }, {}); // пока не используем в сортировке
     const byStageSubs = substages.reduce((m, ss) => { (m[ss.stage_id] ||= []).push(ss); return m; }, {});
-    const byPhaseWorksOnly = works.reduce((m, w) => { if (w.phase_id && !w.stage_id && !w.substage_id) (m[w.phase_id] ||= []).push(w); return m; }, {});
+  const _byPhaseWorksOnly = works.reduce((m, w) => { if (w.phase_id && !w.stage_id && !w.substage_id) (m[w.phase_id] ||= []).push(w); return m; }, {});
     const byStageWorksOnly = works.reduce((m, w) => { if (w.stage_id && !w.substage_id) (m[w.stage_id] ||= []).push(w); return m; }, {});
     const bySubWorks = works.reduce((m, w) => { if (w.substage_id) (m[w.substage_id] ||= []).push(w); return m; }, {});
 
@@ -457,7 +457,7 @@ app.post('/api/admin/import-work-materials', upload.single('file'), async (req,r
           on conflict (work_id, material_id) do update set consumption_per_work_unit=excluded.consumption_per_work_unit, waste_coeff=excluded.waste_coeff, updated_at=now() returning (xmax=0) as inserted`,
           [work_id, material_id, cpu, wc]);
         if (resUp.rows[0] && resUp.rows[0].inserted) inserted++; else updated++;
-      } catch (e) { skipped++; }
+  } catch { skipped++; }
     }
     res.json({ ok:true, inserted, updated, skipped, total: records.length });
   } catch (e) {

@@ -98,7 +98,7 @@ export function FloatingWindow({
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
     if (persistKey) {
-      try { localStorage.setItem('fw-pos:' + persistKey, JSON.stringify(posRef.current)); } catch {}
+      try { localStorage.setItem('fw-pos:' + persistKey, JSON.stringify(posRef.current)); } catch { /* ignore */ }
     }
   };
   const startDrag = (e) => {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
 // Конфиг ширин/высот для вкладки "Расчет сметы" — меняйте цифры здесь
-export const calcColWidths = {
+const calcColWidths = {
   idx: 60,          // № / код работы
   name: 500,        // Наименование работ / материалов
   image: 100,        // Превью изображения материала
@@ -11,10 +11,10 @@ export const calcColWidths = {
   labor: 130,       // Оплата труда / сумма по работе
   actions: 110      // Кнопки / действия
 };
-export const calcRowHeights = _rowHeights.calc;
+const calcRowHeights = _rowHeights.calc;
 // Централизованные размеры превью изображений материалов
 // Меняйте здесь — обновятся все таблицы
-export const previewSizes = {
+const previewSizes = {
   refMaterial:  { w: 28, h: 28, offsetX: 20,  offsetY: 0,  scale: 1 }, // Справочник материалов
   calcMaterial: { w: 36, h: 36, offsetX: 20,  offsetY: -12,  scale: 1 }, // Таблица расчета
   // Пример дополнительного профиля:
@@ -23,7 +23,7 @@ export const previewSizes = {
 // Подвинуть: меняйте offsetX / offsetY (в пикселях, могут быть отрицательными)
 // Масштаб: scale (например 0.9 или 1.2). Размер w/h задаёт контейнер, scale уменьшит/увеличит изображение внутри без ломки сетки.
 // ВНИМАНИЕ: смещение реализовано через CSS transform: translate(x,y) чтобы не ломать поток верстки и избежать влияния margin-collapse.
-export function getPreviewStyle(kind = 'refMaterial') {
+function getPreviewStyle(kind = 'refMaterial') {
   const cfg = previewSizes[kind] || previewSizes.refMaterial;
   const { w, h, offsetX = 40, offsetY = 10, scale = 1 } = cfg;
   return {
@@ -47,7 +47,7 @@ import FloatingWindow from './components/ui/FloatingWindow.jsx';
 import VirtualizedTBody from './components/VirtualizedTBody.jsx';
 import MaterialAutocomplete from './components/MaterialAutocomplete.jsx';
 import { rowHeights as _rowHeights, overscanDefaults } from './virtualizationConfig.js';
-import { exportToCSV } from './utils/exporters.js';
+// import { exportToCSV } from './utils/exporters.js';
 
 export default function App() {
   // Активная вкладка: читаем из localStorage, по умолчанию 'calc'
@@ -61,7 +61,7 @@ export default function App() {
   const [worksPageSize, setWorksPageSize] = useState(0);
   const [worksPage, setWorksPage] = useState(1); // текущая страница (для запроса)
   const [worksHasMore, setWorksHasMore] = useState(false);
-  const [worksTotal, setWorksTotal] = useState(0);
+  const [_worksTotal, setWorksTotal] = useState(0);
   const [worksSearch, setWorksSearch] = useState(''); // строка поиска (UI)
   const worksSearchRef = useRef(''); // актуальная применённая строка (для отмены гонок)
   const searchDebounce = useRef(null);
@@ -69,7 +69,7 @@ export default function App() {
 
   // Сохраняем активную вкладку между перезагрузками/горячими заменами
   useEffect(() => {
-    try { localStorage.setItem('activeTab', active); } catch {}
+    try { localStorage.setItem('activeTab', active); } catch { /* ignore quota errors */ }
   }, [active]);
 
   // Persist collapsed state per user
@@ -78,21 +78,21 @@ export default function App() {
     try {
       const raw = localStorage.getItem('worksCollapsed');
       if (raw) setCollapsed(JSON.parse(raw));
-    } catch {}
+    } catch { /* ignore parse errors */ }
   }, [active]);
   useEffect(() => {
     if (active !== 'works') return;
-    try { localStorage.setItem('worksCollapsed', JSON.stringify(collapsed)); } catch {}
+    try { localStorage.setItem('worksCollapsed', JSON.stringify(collapsed)); } catch { /* ignore quota */ }
   }, [collapsed, active]);
 
-  const toggleGroup = (code) => setCollapsed((prev) => ({ ...prev, [code]: !prev[code] }));
-  const collapseAll = () => {
+  const _toggleGroup = (code) => setCollapsed((prev) => ({ ...prev, [code]: !prev[code] }));
+  const _collapseAll = () => {
     const codes = works.filter(w => w.type === 'group').map(g => g.code);
     const next = {};
     for (const c of codes) next[c] = true;
     setCollapsed(next);
   };
-  const expandAll = () => setCollapsed({});
+  const _expandAll = () => setCollapsed({});
   const [worksLoading, setWorksLoading] = useState(false);
   const [worksError, setWorksError] = useState('');
   // ===== Materials state =====
@@ -103,7 +103,7 @@ export default function App() {
   const [materials, setMaterials] = useState([]);
   const [materialsPage, setMaterialsPage] = useState(1);
   const [materialsHasMore, setMaterialsHasMore] = useState(false);
-  const [materialsTotal, setMaterialsTotal] = useState(0);
+  const [_materialsTotal, setMaterialsTotal] = useState(0);
   const [materialsSearch, setMaterialsSearch] = useState('');
   const materialsSearchRef = useRef('');
   const [materialsLoading, setMaterialsLoading] = useState(false);
@@ -163,8 +163,8 @@ export default function App() {
   const estimateInitialLoad = useRef(false);
   const estimateSaveTimer = useRef(null);
 
-  // Helper: преобразовать calcBlocks -> payload
-  function buildEstimatePayload(blocksArg) {
+  // Helper: преобразовать calcBlocks -> payload (мемоизировано)
+  const buildEstimatePayload = useCallback((blocksArg) => {
     const blocks = blocksArg || calcBlocks;
     return {
       code: 'current',
@@ -180,13 +180,13 @@ export default function App() {
         materials: b.materials.map(m => ({
           material_code: m.code || null,
           material_name: m.name || m.code || '',
-            unit: m.unit || null,
-            quantity: m.quantity || '',
-            unit_price: m.unit_price || ''
+          unit: m.unit || null,
+          quantity: m.quantity || '',
+          unit_price: m.unit_price || ''
         }))
       }))
     };
-  }
+  }, [calcBlocks]);
 
   async function saveEstimateSnapshot(blocksArg) {
     try {
@@ -195,7 +195,7 @@ export default function App() {
       const r = await fetch('/api/estimates/by-code/current/full', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), keepalive: true
       });
-      const j = await r.json().catch(()=>({}));
+  const j = await r.json().catch(()=>({})); // swallow JSON errors
       if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
       setEstimateSavedAt(new Date());
     } catch (e) {
@@ -222,7 +222,7 @@ export default function App() {
   }
 
   // Последняя попытка сохранить на выгрузке страницы
-  function saveEstimateBeacon(blocksArg) {
+  const saveEstimateBeacon = useCallback((blocksArg) => {
     try {
       const payload = buildEstimatePayload(blocksArg);
       const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
@@ -232,7 +232,7 @@ export default function App() {
       }
       return false;
     } catch { return false; }
-  }
+  }, [buildEstimatePayload]);
 
   // Сохранение при закрытии/перезагрузке страницы
   useEffect(() => {
@@ -246,7 +246,7 @@ export default function App() {
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [calcBlocks]);
+  }, [calcBlocks, saveEstimateBeacon]);
 
   // Загрузка сохранённой сметы при входе во вкладку calc (однократно за сессию)
   useEffect(() => {
@@ -278,7 +278,7 @@ export default function App() {
           // Ограничим первоначально видимые блоки
           setCalcVisibleBlocks((prev) => Math.min(Math.max(prev, CALC_PAGE_BLOCKS), blocks.length || CALC_PAGE_BLOCKS));
         }
-      } catch {}
+  } catch { /* ignore fetch/load error */ }
       finally {
         // Снимем блокировку спустя микротакт, чтобы debounce мог работать дальше
         setTimeout(()=> { estimateInitialLoad.current = false; }, 50);
@@ -323,9 +323,84 @@ export default function App() {
       }
     }, 1000);
   return () => { if (estimateSaveTimer.current) { clearTimeout(estimateSaveTimer.current); estimateSaveTimer.current = null; } };
-  }, [calcBlocks, active]);
+  }, [calcBlocks, active, buildEstimatePayload]);
   // Справочник названий для разделов/подразделов (по их id)
   const [groupTitles, setGroupTitles] = useState({}); // { stage_id: title }
+
+  // Мемоизированные ряды для таблиц (вынесены из JSX для соблюдения правил хуков)
+  const calcRows = useMemo(() => {
+    if (!calcBlocks.length) return [{ kind: 'empty', key: 'empty' }];
+    const natural = (a,b)=> String(a||'').localeCompare(String(b||''),'ru',{numeric:true,sensitivity:'base'});
+    // Группируем по stage → substage на полном наборе блоков (без slice), чтобы итоговый порядок был глобально корректен
+    const stagesMap = new Map();
+    const orphan = [];
+    for (const b of calcBlocks) {
+      const st = b.work.stage_id || null;
+      const ss = b.work.substage_id || null;
+      if (!st) { orphan.push(b); continue; }
+      if (!stagesMap.has(st)) stagesMap.set(st, { stage_id: st, stage_name: b.work.stage_name||st, works:[], substages: new Map() });
+      const bucket = stagesMap.get(st);
+      if (ss) {
+        if (!bucket.substages.has(ss)) bucket.substages.set(ss, { substage_id:ss, substage_name: b.work.substage_name||ss, works:[] });
+        bucket.substages.get(ss).works.push(b);
+      } else {
+        bucket.works.push(b);
+      }
+    }
+    const stageKeys = Array.from(stagesMap.keys()).sort((a,b)=> natural(a,b));
+    const outFull = [];
+    for (const stId of stageKeys) {
+      const stage = stagesMap.get(stId);
+      const stageTitle = groupTitles[stId] || stage.stage_name || stId;
+      outFull.push({ kind:'stage-header', key:'stage_'+stId, stId, title: stageTitle });
+      stage.works.sort((a,b)=> natural(a.work.code, b.work.code));
+      for (const wb of stage.works) {
+        outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
+      }
+      const subKeys = Array.from(stage.substages.keys()).sort((a,b)=> natural(a,b));
+      for (const ssId of subKeys) {
+        const ss = stage.substages.get(ssId);
+        const subTitle = groupTitles[ssId] || ss.substage_name || ssId;
+        outFull.push({ kind:'sub-header', key:'sub_'+stId+'_'+ssId, stId, ssId, title: subTitle });
+        ss.works.sort((a,b)=> natural(a.work.code, b.work.code));
+        for (const wb of ss.works) {
+          outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
+        }
+      }
+    }
+    if (orphan.length) {
+      orphan.sort((a,b)=> natural(a.work.code, b.work.code));
+      outFull.push({ kind:'stage-header', key:'orph', stId:'—', title:'Прочее' });
+      for (const wb of orphan) outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
+    }
+    // Ограничиваем по количеству блоков (а не по исходному массиву), чтобы порядок оставался глобальным
+    let blocksCount = 0;
+    const outCapped = [];
+    for (const row of outFull) {
+      outCapped.push(row);
+      if (row.kind === 'block') {
+        blocksCount++;
+        if (blocksCount >= calcVisibleBlocks) break;
+      }
+    }
+    const hasMore = calcBlocks.length > calcVisibleBlocks;
+    return hasMore ? [...outCapped, { kind:'loader', key:'calc_loader' }] : outCapped;
+  }, [calcBlocks, calcVisibleBlocks, groupTitles]);
+
+  const worksRows = useMemo(() => {
+    const visible = works.filter((w) => {
+      if (!w.parents || w.parents.length === 0) return true;
+      for (const p of w.parents) { if (collapsed[p]) return false; }
+      return true;
+    }).filter(w => !(w.type==='group' && w.level==='phase'));
+    const base = visible.map(w => ({ kind: w.type === 'group' ? 'group' : 'item', data: w, key: (w.type==='group' ? 'g:' : 'i:') + (w.code || w.title) }));
+    return worksHasMore ? [...base, { kind: 'loader', key: 'works_loader' }] : base;
+  }, [works, collapsed, worksHasMore]);
+
+  const materialsRows = useMemo(() => {
+    const base = materials.map(m => ({ key: m._rowId, data: m }));
+    return materialsHasMore ? [...base, { key: 'materials_loader', kind: 'loader' }] : base;
+  }, [materials, materialsHasMore]);
   const [addBlockModal, setAddBlockModal] = useState(false);
   const [addBlockForm, setAddBlockForm] = useState({
     work_input:'', // пользователь вводит код или часть названия
@@ -403,7 +478,7 @@ export default function App() {
     setAddBlockModal(false);
     setCreatingBlock(false);
   };
-  const addCalcBlockEmpty = () => { // запасной быстрый вариант (не используется но можно оставить)
+  const _addCalcBlockEmpty = () => { // запасной быстрый вариант (оставлено для отладки)
     setCalcBlocks(prev => [...prev, { id:Date.now()+'_'+Math.random().toString(36).slice(2), groupName:'', work:{ name:'', unit:'', quantity:'', unit_price:'', image:'', labor_total:0 }, materials:[{ name:'', unit:'', quantity:'', unit_price:'', total:'' }] }]);
   };
   const updateBlock = (id, updater) => {
@@ -416,7 +491,7 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [confirmDel, setConfirmDel] = useState({ open:false, code:'', name:'' });
-  const [modalData, setModalData] = useState({
+  const [_modalData, setModalData] = useState({
     stage_id: '', stage_name: '',
     substage_id: '', substage_name: '',
     work_id: '', work_name: '',
@@ -424,14 +499,14 @@ export default function App() {
   });
 
   const openAddModal = () => { setModalOpen(true); };
-  const closeAddModal = () => { setModalOpen(false); };
-  const setMD = (k, v) => setModalData((prev) => ({ ...prev, [k]: v }));
+  const _closeAddModal = () => { setModalOpen(false); };
+  const _setMD = (k, v) => setModalData((prev) => ({ ...prev, [k]: v }));
   const modalBoxRef = useRef(null);
   useEffect(() => {
     if (!modalOpen) return;
     // автофокус на первое поле
     const t = setTimeout(() => {
-      try { modalBoxRef.current?.querySelector('input')?.focus(); } catch {}
+      try { modalBoxRef.current?.querySelector('input')?.focus(); } catch { /* ignore focus errors */ }
     }, 0);
     return () => clearTimeout(t);
   }, [modalOpen]);
@@ -626,8 +701,8 @@ export default function App() {
   };
   
   // Суммарные ширины таблиц для горизонтального скролла
-  const worksTotalWidth = Object.values(colWidths).reduce((a,b)=>a+b,0);
-  const materialsTotalWidth = Object.values(materialsColWidths).reduce((a,b)=>a+b,0);
+  const _worksTotalWidth = Object.values(colWidths).reduce((a,b)=>a+b,0);
+  const _materialsTotalWidth = Object.values(materialsColWidths).reduce((a,b)=>a+b,0);
   // Создание новой строки материала (в конце списка, локально, потом сохранение)
   const addMaterialRow = () => {
     const tmpId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -678,6 +753,7 @@ export default function App() {
       setMaterials(prev => prev.filter(m => m !== mat));
     } catch (e) { alert('Ошибка удаления: ' + (e.message || e)); }
   };
+
 
   // Загрузка материалов при активации вкладки или смене страницы/поиска
   useEffect(() => {
@@ -813,7 +889,7 @@ export default function App() {
           if (it.type === 'group') map[it.code] = it.title || it.code;
         }
         if (!aborted) setGroupTitles(map);
-      } catch {}
+  } catch { /* ignore mapping load errors */ }
     })();
     return () => { aborted = true; };
   }, [active]);
@@ -1109,64 +1185,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <VirtualizedTBody
-                    rows={useMemo(() => {
-                      if (!calcBlocks.length) return [{ kind: 'empty', key: 'empty' }];
-                      const natural = (a,b)=> String(a||'').localeCompare(String(b||''),'ru',{numeric:true,sensitivity:'base'});
-                      // Группируем по stage → substage на полном наборе блоков (без slice), чтобы итоговый порядок был глобально корректен
-                      const stagesMap = new Map();
-                      const orphan = [];
-                      for (const b of calcBlocks) {
-                        const st = b.work.stage_id || null;
-                        const ss = b.work.substage_id || null;
-                        if (!st) { orphan.push(b); continue; }
-                        if (!stagesMap.has(st)) stagesMap.set(st, { stage_id: st, stage_name: b.work.stage_name||st, works:[], substages: new Map() });
-                        const bucket = stagesMap.get(st);
-                        if (ss) {
-                          if (!bucket.substages.has(ss)) bucket.substages.set(ss, { substage_id:ss, substage_name: b.work.substage_name||ss, works:[] });
-                          bucket.substages.get(ss).works.push(b);
-                        } else {
-                          bucket.works.push(b);
-                        }
-                      }
-                      const stageKeys = Array.from(stagesMap.keys()).sort((a,b)=> natural(a,b));
-                      const outFull = [];
-                      for (const stId of stageKeys) {
-                        const stage = stagesMap.get(stId);
-                        const stageTitle = groupTitles[stId] || stage.stage_name || stId;
-                        outFull.push({ kind:'stage-header', key:'stage_'+stId, stId, title: stageTitle });
-                        stage.works.sort((a,b)=> natural(a.work.code, b.work.code));
-                        for (const wb of stage.works) {
-                          outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
-                        }
-                        const subKeys = Array.from(stage.substages.keys()).sort((a,b)=> natural(a,b));
-                        for (const ssId of subKeys) {
-                          const ss = stage.substages.get(ssId);
-                          const subTitle = groupTitles[ssId] || ss.substage_name || ssId;
-                          outFull.push({ kind:'sub-header', key:'sub_'+stId+'_'+ssId, stId, ssId, title: subTitle });
-                          ss.works.sort((a,b)=> natural(a.work.code, b.work.code));
-                          for (const wb of ss.works) {
-                            outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
-                          }
-                        }
-                      }
-                      if (orphan.length) {
-                        orphan.sort((a,b)=> natural(a.work.code, b.work.code));
-                        outFull.push({ kind:'stage-header', key:'orph', stId:'—', title:'Прочее' });
-                        for (const wb of orphan) outFull.push({ kind:'block', key:'blk_'+wb.id, block: wb });
-                      }
-                      // Ограничиваем по количеству блоков (а не по исходному массиву), чтобы порядок оставался глобальным
-                      let blocksCount = 0;
-                      const outCapped = [];
-                      for (const row of outFull) {
-                        outCapped.push(row);
-                        if (row.kind === 'block') {
-                          blocksCount++;
-                          if (blocksCount >= calcVisibleBlocks) break;
-                        }
-                      }
-                      const hasMore = calcBlocks.length > calcVisibleBlocks;
-                      return hasMore ? [...outCapped, { kind:'loader', key:'calc_loader' }] : outCapped;
-                    }, [calcBlocks, calcVisibleBlocks, groupTitles])}
+                    rows={calcRows}
                     colCount={9}
                     overscan={overscanDefaults.calc}
                     getRowKey={(row) => row.key}
@@ -1272,15 +1291,9 @@ export default function App() {
                                           };
                                           return { ...o, materials: ms };
                                         });
-                                        // try to sync with backend snapshot if we have a persisted id
                                         try {
-                                          if (row && row.kind === 'block') {
-                                            // no direct id here; server-side linkage is in estimate snapshot outside of this component
-                                            // Keeping ECONOMY: rely on snapshot save debounce rather than immediate PATCH
-                                            await saveEstimateSnapshot();
-                                          }
+                                          await saveEstimateSnapshot();
                                         } catch (e) {
-                                          // rollback
                                           onUpd(o=>{
                                             const ms = [...o.materials];
                                             ms[mi] = prev;
@@ -1309,7 +1322,14 @@ export default function App() {
                                   <td role="cell" className="px-2 py-2 text-gray-800">—</td>
                                   <td role="cell" className="px-2 py-2 text-right">
                                     {wb.materials.length>1 && (
-                                      <button onClick={()=> onUpd(o=>({...o, materials: o.materials.filter((_,j)=> j!==mi)}))} className="text-gray-400 hover:text-red-600 text-xs">Удалить</button>
+                                      <button
+                                        onClick={()=> onUpd(o=>({...o, materials: o.materials.filter((_,j)=> j!==mi)}))}
+                                        className="text-red-600 hover:text-red-700 p-1"
+                                        title="Удалить"
+                                        aria-label="Удалить"
+                                      >
+                                        <span className="material-symbols-outlined text-base align-middle">delete</span>
+                                      </button>
                                     )}
                                   </td>
                                 </tr>
@@ -1320,7 +1340,9 @@ export default function App() {
                               <td role="cell" className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
                               <td role="cell" className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
                               <td role="cell" className="px-2 py-2 text-right">
-                                <button onClick={onRemove} className="text-gray-400 hover:text-red-600 text-xs">Удалить блок</button>
+                                <button onClick={onRemove} className="text-red-600 hover:text-red-700 p-1" title="Удалить блок" aria-label="Удалить блок">
+                                  <span className="material-symbols-outlined text-base align-middle">delete</span>
+                                </button>
                               </td>
                             </tr>
                           </React.Fragment>
@@ -1546,12 +1568,12 @@ export default function App() {
                         setUploading(true);
                         const r = await fetch('/api/admin/import', { method: 'POST', body: fd });
                         const j = await r.json();
-                        if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
-                        alert(`Импорт завершен: ${j.imported} строк\nПропущено: ${j.skippedRows || 0}\nРаботы: +${j.insertedWorks} / обновлено ${j.updatedWorks}\nФазы: +${j.insertedPhases} / обновлено ${j.updatedPhases}\nРазделы: +${j.insertedStages} / обновлено ${j.updatedStages}\nПодразделы: +${j.insertedSubstages} / обновлено ${j.updatedSubstages}`);
+                          if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP '+r.status));
+                          alert(`Импорт завершен: ${j.imported} строк\nПропущено: ${j.skippedRows || 0}\nРаботы: +${j.insertedWorks} / обновлено ${j.updatedWorks}\nФазы: +${j.insertedPhases} / обновлено ${j.updatedPhases}\nРазделы: +${j.insertedStages} / обновлено ${j.updatedStages}\nПодразделы: +${j.insertedSubstages} / обновлено ${j.updatedSubstages}`);
                         // перезагрузка текущей страницы работ
                         try {
               const qParam = worksSearch ? `&q=${encodeURIComponent(worksSearch)}` : '';
-              const params = `?page=${worksPage}&limit=${WORKS_PAGE_SIZE}${qParam}`;
+              const params = `?page=${worksPage}&limit=${worksPageSize}${qParam}`;
                           const data = await fetchJsonTry([
                             `/api/works-rows${params}`,
                             `http://localhost:4000/api/works-rows${params}`,
@@ -1562,7 +1584,7 @@ export default function App() {
                           } else {
                 setWorks(data.items || []); setWorksTotal(data.total || (data.items?.length || 0));
                           }
-                        } catch {}
+                        } catch { /* ignore refresh error */ }
                       } catch (err) {
                         alert('Ошибка импорта: ' + (err.message || err));
                       } finally {
@@ -1707,15 +1729,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <VirtualizedTBody
-                    rows={useMemo(() => {
-                      const visible = works.filter((w) => {
-                        if (!w.parents || w.parents.length === 0) return true;
-                        for (const p of w.parents) { if (collapsed[p]) return false; }
-                        return true;
-                      }).filter(w => !(w.type==='group' && w.level==='phase'));
-                      const base = visible.map(w => ({ kind: w.type === 'group' ? 'group' : 'item', data: w, key: (w.type==='group' ? 'g:' : 'i:') + (w.code || w.title) }));
-                      return worksHasMore ? [...base, { kind: 'loader', key: 'works_loader' }] : base;
-                    }, [works, collapsed, worksHasMore])}
+                    rows={worksRows}
                     colCount={5}
                     overscan={overscanDefaults.refs}
                     estimateSize={(row) => row.kind === 'group' ? 40 : 52}
@@ -1914,10 +1928,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <VirtualizedTBody
-                      rows={useMemo(() => {
-                        const base = materials.map(m => ({ key: m._rowId, data: m }));
-                        return materialsHasMore ? [...base, { key: 'materials_loader', kind: 'loader' }] : base;
-                      }, [materials, materialsHasMore])}
+                      rows={materialsRows}
                       colCount={9}
                       overscan={overscanDefaults.refs}
                       estimateSize={(row) => row?.kind === 'loader' ? 56 : 56}
@@ -2033,87 +2044,4 @@ export default function App() {
   );
 }
 
-// Рендер строки работы + её материалов (без групп-заголовков)
-function renderWorkRow(block, groupIndex, workSum, matsTotal) {
-  return (
-    <React.Fragment key={block.id}>
-  <tr>
-  <td className="px-2 py-2 text-gray-800">{block.work.code}</td>
-        <td className="px-2 py-2 text-gray-800">
-          <textarea
-            value={block.work.name}
-            placeholder="Наименование работы"
-            onChange={(e)=> { block._update && block._update(b=> ({...b, work:{...b.work, name:e.target.value}})); autoGrow(e.target); }}
-            ref={(el)=> el && autoGrow(el)}
-            className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none leading-snug"
-            style={{ whiteSpace:'normal', wordBreak:'break-word', overflow:'hidden' }}
-            rows={1}
-          />
-        </td>
-  <td className="px-2 py-2"></td>
-    <td className="px-2 py-2 text-gray-800">
-          <input value={block.work.unit} placeholder="ед" onChange={(e)=> block._update && block._update(o=>({...o, work:{...o.work, unit:e.target.value}}))} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
-        </td>
-    <td className="px-2 py-2 text-gray-800">
-          <input value={block.work.quantity} placeholder="0" onChange={(e)=> block._update && block._update(o=>({...o, work:{...o.work, quantity:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
-        </td>
-    <td className="px-2 py-2 text-gray-800">
-          <input value={block.work.unit_price} placeholder="0" onChange={(e)=> block._update && block._update(o=>({...o, work:{...o.work, unit_price:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
-        </td>
-        <td className="px-2 py-2 text-gray-800">—</td>
-        <td className="px-2 py-2 font-semibold text-right text-gray-800">{workSum ? workSum.toFixed(2) : '—'}</td>
-        <td className="px-2 py-2">
-          <button onClick={()=> block._update && block._update(o=>({...o, materials:[...o.materials, { name:'', unit:'', quantity:'', unit_price:'', total:'' }]}))} className="bg-primary-50 text-primary-600 px-2 py-1 rounded text-xs mr-2">+ Материал</button>
-        </td>
-      </tr>
-      {block.materials.map((m, mi) => {
-                              const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
-        return (
-      <tr key={mi}>
-            <td className="px-2 py-2 text-gray-800"></td>
-            <td className="px-2 py-2 text-gray-800">
-              <textarea
-                value={m.name}
-                placeholder="Материал"
-                onChange={(e)=> { block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], name:e.target.value}; return {...o, materials:ms}; }); autoGrow(e.target); }}
-                ref={(el)=> el && autoGrow(el)}
-                className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none leading-snug"
-                style={{ whiteSpace:'normal', wordBreak:'break-word', overflow:'hidden' }}
-                rows={1}
-              />
-            </td>
-            <td className="px-2 py-2">
-              {m.image_url ? (
-                <img src={m.image_url} alt="img" className="rounded border object-cover" style={getPreviewStyle('calcMaterial')} onError={(e)=>{e.currentTarget.style.display='none';}} />
-              ) : null}
-            </td>
-    <td className="px-2 py-2 text-gray-800">
-              <input value={m.unit} placeholder="ед" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
-            </td>
-    <td className="px-2 py-2 text-gray-800">
-              <input value={m.quantity} placeholder="0" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
-            </td>
-    <td className="px-2 py-2 text-gray-800">
-              <input value={m.unit_price} placeholder="0" onChange={(e)=> block._update && block._update(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
-            </td>
-            <td className="px-2 py-2 text-gray-800">{matSum? matSum.toFixed(2): '—'}</td>
-            <td className="px-2 py-2 text-gray-800">—</td>
-            <td className="px-2 py-2 text-right">
-              {block.materials.length>1 && (
-                <button onClick={()=> block._update && block._update(o=>({...o, materials: o.materials.filter((_,j)=> j!==mi)}))} className="text-gray-400 hover:text-red-600 text-xs">Удалить</button>
-              )}
-            </td>
-          </tr>
-        );
-      })}
-  <tr className="bg-gray-50 font-semibold">
-        <td className="px-2 py-2 text-gray-800" colSpan={6}>ИТОГО ПО ГРУППЕ:</td>
-        <td className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
-        <td className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
-        <td className="px-2 py-2 text-right">
-          <button onClick={()=> block._remove && block._remove(block.id)} className="text-gray-400 hover:text-red-600 text-xs">Удалить блок</button>
-        </td>
-      </tr>
-    </React.Fragment>
-  );
-}
+// (пусто)
