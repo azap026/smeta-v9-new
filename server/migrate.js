@@ -162,6 +162,25 @@ create table if not exists estimate_item_materials (
 create index if not exists idx_eim_item on estimate_item_materials(estimate_item_id);
 create index if not exists idx_eim_material on estimate_item_materials(material_id);
 
+-- =============================
+-- PROJECTS (вкладка "Создать проект")
+-- =============================
+create table if not exists projects (
+  id serial primary key,
+  code text unique,
+  name text not null,
+  customer text,
+  address text,
+  currency text default 'RUB',
+  vat numeric(6,3) default 0,
+  start_date date,
+  end_date date,
+  notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists idx_projects_name on projects using gin (to_tsvector('simple', name));
+
 -- Представление для быстрого агрегирования (сумма по работам) - опционально (создаем по необходимости)
 -- create or replace view v_estimate_items_totals as
 --   select ei.id as estimate_item_id,

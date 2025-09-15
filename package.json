@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "nodemon -q --watch server --ext js,mjs --signal SIGINT server/index.js",
+  "dev:api": "nodemon -q --watch server --ext js,mjs --delay 300ms --signal SIGINT server/index.js",
     "server": "node server/index.js",
     "migrate": "node server/migrate.js",
     "import:bdwm": "node server/import_bdwm.js",

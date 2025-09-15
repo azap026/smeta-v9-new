@@ -15,6 +15,7 @@ function MaterialAutocompleteInner({
   value,
   onSelect,
   placeholder = 'Начните вводить название или артикул…',
+  // eslint-disable-next-line no-unused-vars
   disabled,
   currentId,
   // UI extensions
@@ -22,8 +23,10 @@ function MaterialAutocompleteInner({
   onAddNew: _onAddNew, // (text:string) => void
   // eslint-disable-next-line no-unused-vars
   headerContent: _headerContent, // ReactNode: renders at the top of the dropdown
-  footerContent, // ReactNode: renders at the bottom of the dropdown
-  dropdownMaxHeight = '56vh',
+  // eslint-disable-next-line no-unused-vars
+  footerContent: _footerContent, // ReactNode: renders at the bottom of the dropdown
+  // eslint-disable-next-line no-unused-vars
+  dropdownMaxHeight: _dropdownMaxHeight = '56vh',
   // eslint-disable-next-line no-unused-vars
   thumbnailSize: _thumbnailSize = 24,
 }, ref) {
@@ -31,6 +34,7 @@ function MaterialAutocompleteInner({
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(-1);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // eslint-disable-next-line no-unused-vars
   const [alignKw, setAlignKw] = useState({
     code: { justify: 'flex-start', text: 'left' },
     name: { justify: 'flex-start', text: 'left' },
@@ -38,7 +42,7 @@ function MaterialAutocompleteInner({
     unit: { justify: 'center',     text: 'center' },
     thumb:{ justify: 'center',     text: 'center' },
   });
-  const { items, loading } = useMaterialSearch(input, { debounceMs: 200, limit: 20 });
+  const { items, loading: _loading } = useMaterialSearch(input, { debounceMs: 200, limit: 20 });
   const inputRef = useRef(null);
   const listRef = useRef(null);
 
@@ -52,7 +56,7 @@ function MaterialAutocompleteInner({
     openPalette: (initialQuery = '') => {
       try {
         if (typeof initialQuery === 'string') setInput(initialQuery);
-      } catch {}
+  } catch { /* ignore focus errors */ }
       setPaletteOpen(true);
       setTimeout(() => inputRef.current?.focus(), 0);
     }
@@ -74,28 +78,7 @@ function MaterialAutocompleteInner({
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
-  const highlight = (txt) => {
-    const q = (input||'').trim().toLowerCase();
-    if (!q || q.length<2) return txt;
-    const lower = (txt||'');
-    const i = lower.toLowerCase().indexOf(q);
-    if (i === -1) return txt;
-    return (
-      <>
-        {txt.slice(0,i)}
-        <mark className="auto-mark">{txt.slice(i, i+q.length)}</mark>
-        {txt.slice(i+q.length)}
-      </>
-    );
-  };
-
-  const fmtPrice = (v) => {
-    if (v == null || Number.isNaN(+v)) return <span className="text-gray-400">—</span>;
-    const n = Number(v);
-    const s = n.toFixed(2);
-    const trimmed = s.endsWith('.00') ? s.slice(0, -3) : s;
-    return <span className="tabular-nums">{trimmed} ₽</span>;
-  };
+  // highlight and fmtPrice helpers removed as unused (UI now relies on modal palette)
 
   // Overlay via portal (always on top)
   // Drop old overlay; we'll use modal palette instead

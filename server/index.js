@@ -280,7 +280,7 @@ app.get('/api/materials/search', async (req, res) => {
     if (qRaw.length < 2) return res.json([]);
     const q = '%' + qRaw.toLowerCase() + '%';
     const { rows } = await pool.query(
-      `select id, name, unit, unit_price, image_url as image
+      `select id, name, unit, unit_price, image_url as image, expenditure
        from materials
        where lower(name) like $1 or lower(id) like $1
        order by id
@@ -368,7 +368,7 @@ app.delete('/api/materials/:id', async (req, res) => {
 app.get('/api/work-materials/:work_id', async (req,res) => {
   try {
     const { rows } = await pool.query(`select wm.work_id, wm.material_id,
-      m.name as material_name, m.unit as material_unit, m.unit_price as material_unit_price, m.image_url as material_image_url,
+      m.name as material_name, m.unit as material_unit, m.unit_price as material_unit_price, m.image_url as material_image_url, m.expenditure as material_expenditure,
       wm.consumption_per_work_unit, wm.waste_coeff,
       w.name as work_name, w.unit as work_unit, w.unit_price as work_unit_price,
       w.stage_id, w.substage_id, st.name as stage_name, ss.name as substage_name
@@ -897,6 +897,62 @@ app.get('/api/works', async (req, res) => {
   }
 });
 
+// ========================= PROJECTS =========================
+// List projects with optional search & pagination
+app.get('/api/projects', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limitRaw = parseInt(req.query.limit) || 50;
+    const limit = Math.min(100, Math.max(1, limitRaw));
+    const qRaw = (req.query.q || '').toString().trim();
+    const args = [];
+    let where = '';
+    if (qRaw) {
+      args.push('%' + qRaw.toLowerCase() + '%');
+      where = "where lower(name) like $1 or lower(code) like $1 or lower(customer) like $1";
+    }
+    const offset = (page - 1) * limit;
+    const { rows } = await pool.query(`select * from projects ${where} order by id desc limit ${limit} offset ${offset}`, args);
+    const total = (await pool.query(`select count(*)::int as c from projects ${where}`, args)).rows[0].c;
+    res.json({ ok:true, items: rows, page, limit, total, hasMore: offset + rows.length < total, q: qRaw || undefined });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Get single project by id
+app.get('/api/projects/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from projects where id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ ok:false, error:'not found' });
+    res.json({ ok:true, project: rows[0] });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Create project
+app.post('/api/projects', async (req, res) => {
+  const { code, name, customer, address, currency, vat, start_date, end_date, notes } = req.body || {};
+  if (!name) return res.status(400).json({ ok:false, error:'name required' });
+  try {
+    // normalize numeric and dates
+    const vatNum = vat===''||vat==null? 0 : Number(String(vat).replace(/\s+/g,'').replace(/,/g,'.'));
+    const sd = start_date ? new Date(start_date) : null;
+    const ed = end_date ? new Date(end_date) : null;
+    // optional auto code if not provided
+    let useCode = (code || '').trim() || null;
+    if (!useCode) {
+      // simple slug from name + timestamp
+      const base = (name || '').toString().trim().toLowerCase().replace(/[^a-z0-9а-яё\- ]/gi,'').replace(/\s+/g,'-').slice(0,40);
+      useCode = base ? `${base}-${Date.now().toString().slice(-6)}` : null;
+    }
+    const { rows } = await pool.query(
+      `insert into projects(code, name, customer, address, currency, vat, start_date, end_date, notes)
+       values($1,$2,$3,$4,coalesce($5,'RUB'),$6,$7,$8,$9) returning *`,
+      [useCode, name, customer||null, address||null, currency||null, vatNum, sd, ed, notes||null]
+    );
+    res.status(201).json({ ok:true, project: rows[0] });
+  } catch (e) {
+    if (e && e.code === '23505') return res.status(409).json({ ok:false, error:'code already exists' });
+    res.status(500).json({ ok:false, error:e.message });
+  }
+});
+
 app.post('/api/works', async (req, res) => {
   const { code, name, unit, price, group_code } = req.body;
   try {
@@ -1211,8 +1267,7 @@ app.post('/api/estimates/by-code/:code/full', async (req,res) => {
 
     // Batch insert estimate_items and capture ids mapped by sort_order (idx)
     let idByIdx = new Map();
-    if (itemsData.length) {
-      const colsPerRow = 10; // estimate_id, work_id, work_code, work_name, unit, quantity, unit_price, stage_id, substage_id, sort_order
+  if (itemsData.length) {
       const values = [];
       const params = [];
       let p = 1;
@@ -1296,17 +1351,36 @@ app.post('/api/estimates/by-code/:code/full', async (req,res) => {
   finally { client.release(); }
 });
 
-const port = process.env.PORT || 4000;
-const host = process.env.HOST || '0.0.0.0';
-const srv = app.listen(port, host, () => {
-  const addr = srv.address();
-  const shown = typeof addr === 'object' && addr ? `${addr.address}:${addr.port}` : String(addr);
-  console.log(`API listening on ${shown}`);
-});
-srv.on('error', (err) => {
-  console.error('Server listen error:', err?.message || err);
-});
-process.on('unhandledRejection', (e) => console.error('unhandledRejection', e));
-process.on('uncaughtException', (e) => console.error('uncaughtException', e));
-process.on('SIGTERM', () => console.log('SIGTERM received'));
-process.on('SIGINT', () => console.log('SIGINT received'));
+// Export app for tests/tools; start server only when this module is executed directly
+function startServer() {
+  const port = process.env.PORT || 4000;
+  const host = process.env.HOST || '0.0.0.0';
+  const srv = app.listen(port, host, () => {
+    const addr = srv.address();
+    const shown = typeof addr === 'object' && addr ? `${addr.address}:${addr.port}` : String(addr);
+    console.log(`API listening on ${shown}`);
+  });
+  srv.on('error', (err) => {
+    console.error('Server listen error:', err?.message || err);
+  });
+  process.on('unhandledRejection', (e) => console.error('unhandledRejection', e));
+  process.on('uncaughtException', (e) => console.error('uncaughtException', e));
+  process.on('SIGTERM', () => console.log('SIGTERM received'));
+  process.on('SIGINT', () => console.log('SIGINT received'));
+  return srv;
+}
+
+// In ESM environment, compare import.meta.url to the executed script path (robust for Windows)
+try {
+  const { pathToFileURL } = await import('url');
+  const entry = process.argv && process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
+  if (!process.env.VITEST && entry && import.meta.url === entry) {
+    startServer();
+  }
+} catch {
+  // Fallback: try to start if no argv info available and not under tests
+  if (!process.env.VITEST && process.argv && process.argv[1]) startServer();
+}
+
+export default app;
+export { pool };

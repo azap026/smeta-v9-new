@@ -46,6 +46,8 @@ import { Label, Input, Button } from './components/ui/form';
 import FloatingWindow from './components/ui/FloatingWindow.jsx';
 import VirtualizedTBody from './components/VirtualizedTBody.jsx';
 import MaterialAutocomplete from './components/MaterialAutocomplete.jsx';
+import CreateProject from './components/CreateProject.jsx';
+import LoaderOverlay from './components/LoaderOverlay.tsx';
 import { rowHeights as _rowHeights, overscanDefaults } from './virtualizationConfig.js';
 // import { exportToCSV } from './utils/exporters.js';
 
@@ -363,7 +365,7 @@ export default function App() {
       }
     }, 1000);
   return () => { if (estimateSaveTimer.current) { clearTimeout(estimateSaveTimer.current); estimateSaveTimer.current = null; } };
-  }, [calcBlocks, active, buildEstimatePayload]);
+  }, [calcBlocks, active, buildEstimatePayload, LIVE_CALC_NO_SNAPSHOT]);
   // Справочник названий для разделов/подразделов (по их id)
   const [groupTitles, setGroupTitles] = useState({}); // { stage_id: title }
 
@@ -1047,6 +1049,18 @@ export default function App() {
                   </a>
                 </li>
                 <li>
+                  <a
+                    href="#"
+                    onClick={(e) => { e.preventDefault(); setActive("project"); }}
+                    className={`flex items-center space-x-3 px-3 py-2 rounded-lg ${
+                      active === "project" ? "bg-primary-50 text-primary-700 font-medium" : "hover:bg-primary-50 text-gray-700 hover:text-primary-700 transition-colors group"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-gray-400 group-hover:text-primary-500">note_add</span>
+                    <span>Создать проект</span>
+                  </a>
+                </li>
+                <li>
                   <a href="#" className="flex items-center space-x-3 px-3 py-2 rounded-lg hover:bg-primary-50 text-gray-700 hover:text-primary-700 transition-colors group">
                     <span className="material-symbols-outlined text-gray-400 group-hover:text-primary-500">description</span>
                     <span>Смета</span>
@@ -1093,7 +1107,7 @@ export default function App() {
                   <span className="material-symbols-outlined text-2xl">menu</span>
                 </button>
                 <h1 className="text-xl font-semibold text-gray-800">{
-                  active === "calc" ? "Расчет сметы" : active === "works" ? "Справочник работ" : "Справочник материалов"
+                  active === "calc" ? "Расчет сметы" : active === "works" ? "Справочник работ" : active === 'project' ? 'Создать проект' : "Справочник материалов"
                 }</h1>
               </div>
               <div className="flex items-center space-x-4">
@@ -1106,6 +1120,9 @@ export default function App() {
           </header>
           {/* Main Content Area */}
           <div className="flex-1 min-h-0 overflow-hidden p-6 bg-gray-50 flex flex-col">
+            {(active==='works' && worksLoading) || (active==='materials' && materialsLoading) ? (
+              <LoaderOverlay />
+            ) : null}
             {active === "calc" ? (
             <div className="flex flex-col min-h-0 gap-6">
             <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
@@ -1245,6 +1262,8 @@ export default function App() {
                     <col style={{ width: calcColWidths.unit }} />
                     <col style={{ width: calcColWidths.qty }} />
                     <col style={{ width: calcColWidths.unitPrice }} />
+                    {/* Норматив расхода (из справочника материала) */}
+                    <col style={{ width: 120 }} />
                     <col style={{ width: calcColWidths.mats }} />
                     <col style={{ width: calcColWidths.labor }} />
                     <col style={{ width: calcColWidths.actions }} />
@@ -1257,6 +1276,7 @@ export default function App() {
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Ед. изм.</th>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Кол-во</th>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">На единицу</th>
+                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Норматив (CPU)</th>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Материалы</th>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Оплата труда</th>
                       <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Действия</th>
@@ -1264,7 +1284,7 @@ export default function App() {
                   </thead>
                   <VirtualizedTBody
                     rows={calcRows}
-                    colCount={9}
+                    colCount={10}
                     overscan={overscanDefaults.calc}
                     getRowKey={(row) => row.key}
                     estimateSize={(row) => {
@@ -1294,7 +1314,7 @@ export default function App() {
                         return (
                           <tr ref={measureRef} key={row.key} className="bg-primary-50 font-bold text-gray-700" role="row" aria-rowindex={ariaRowIndex}>
                             <td role="cell" className="px-2 py-2 text-gray-800">{row.stId}</td>
-                            <td role="cell" className="px-2 py-2 text-gray-800" colSpan={8}>{row.title}</td>
+                            <td role="cell" className="px-2 py-2 text-gray-800" colSpan={9}>{row.title}</td>
                           </tr>
                         );
                       }
@@ -1302,7 +1322,7 @@ export default function App() {
                         return (
                           <tr ref={measureRef} key={row.key} className="bg-purple-50 font-semibold text-gray-700" role="row" aria-rowindex={ariaRowIndex}>
                             <td role="cell" className="px-2 py-2 text-gray-800">{row.ssId}</td>
-                            <td role="cell" className="px-2 py-2 text-gray-800" colSpan={8}>{row.title}</td>
+                            <td role="cell" className="px-2 py-2 text-gray-800" colSpan={9}>{row.title}</td>
                           </tr>
                         );
                       }
@@ -1311,13 +1331,12 @@ export default function App() {
                         const workQty = (parseFloat(wb.work.quantity)||0);
                         const workSum = workQty * (parseFloat(wb.work.unit_price)||0);
                         const matsTotal = (wb.materials||[]).reduce((s,m)=> {
-                          if (!LIVE_CALC_NO_SNAPSHOT) {
-                            return s + (((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)));
-                          }
-                          const cpu = (m.cpu != null ? parseFloat(m.cpu) : parseFloat(m.quantity)) || 0; // cpu: расход на 1 ед. работы
-                          const wc = (m.wc != null ? parseFloat(m.wc) : 1) || 1;
-                          const effQty = workQty * cpu * wc;
-                          return s + (effQty * ((parseFloat(m.unit_price)||0)));
+                          // Кол-во материала = Норматив (CPU) × Кол-во работ
+                          const cpu = (m?.cpu != null ? parseFloat(m.cpu) : parseFloat(m.quantity)) || 0;
+                          const effQty = workQty * cpu;
+                          const roundedQty = Math.ceil(effQty);
+                          // Суммы считаем по округленному количеству
+                          return s + (roundedQty * ((parseFloat(m.unit_price)||0)));
                         },0);
                         const onUpd = (fn) => updateBlock(wb.id, fn);
                         const onRemove = async () => {
@@ -1340,7 +1359,7 @@ export default function App() {
                           const next = calcBlocks.filter(b => b.id !== wb.id);
                           setCalcBlocks(next);
                           if (!LIVE_CALC_NO_SNAPSHOT) {
-                            try { await saveEstimateSnapshot(next); } catch {}
+                            try { await saveEstimateSnapshot(next); } catch { /* ignore snapshot error */ }
                           }
                         };
                         return (
@@ -1376,7 +1395,10 @@ export default function App() {
                               </td>
                             </tr>
                             {(wb.materials||[]).map((m, mi) => {
-                              const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
+                              const cpuVal = (m?.cpu != null ? parseFloat(m.cpu) : parseFloat(m.quantity)) || 0;
+                              const effQty = (parseFloat(wb.work.quantity)||0) * cpuVal; // Кол-во = CPU × Кол-во работ
+                              const roundedQty = Math.ceil(effQty);
+                              const matSum = roundedQty * ((parseFloat(m.unit_price)||0));
                               // ref to control palette open (use createRef to avoid hooks-in-loop)
                               const matAutoRef = React.createRef();
                               return (
@@ -1442,7 +1464,7 @@ export default function App() {
                                                   if (found.waste_coeff != null) oldWc = Number(found.waste_coeff) || 1;
                                                 }
                                               }
-                                            } catch {}
+                                            } catch { /* ignore fetch of old cpu/wc */ }
                                             // Возьмём расход из текущей строки (если есть), иначе из старой связи; коэффициент отходов — из старой связи (или 1)
                                             const uiCpu = (m && m.quantity != null && m.quantity !== '') ? Number(String(m.quantity).replace(/\s+/g,'').replace(/,/g,'.')) : null;
                                             const cpu = (uiCpu!=null && !Number.isNaN(uiCpu)) ? uiCpu : (oldCpu!=null && !Number.isNaN(oldCpu) ? oldCpu : null);
@@ -1455,7 +1477,7 @@ export default function App() {
                                             });
                                             if (!upR.ok) {
                                               let msg = 'HTTP ' + upR.status;
-                                              try { const j = await upR.json(); if (j && j.error) msg = j.error; } catch {}
+                                              try { const j = await upR.json(); if (j && j.error) msg = j.error; } catch { /* ignore json parse */ }
                                               console.warn('POST work-materials failed:', msg);
                                               alert('Не удалось обновить нормативную связь: ' + msg);
                                             } else {
@@ -1489,13 +1511,19 @@ export default function App() {
                                   <td role="cell" className="px-2 py-2 text-gray-800">
                                     <input value={m.unit} placeholder="ед" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
                                   </td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800 text-right">
+                                    {roundedQty ? String(roundedQty) : '—'}
+                                  </td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800">
+                                    <input value={m.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                  </td>
+                                  {/* Норматив (CPU) — редактируемый, сохраняется как consumption_per_work_unit */}
                                   <td role="cell" className="px-2 py-2 text-gray-800">
                                     <input
                                       value={m.quantity}
                                       placeholder="0"
                                       onChange={(e)=> onUpd(o=>{ const v=e.target.value; const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:v, cpu: (v===''? null : Number(String(v).replace(/\s+/g,'').replace(/,/g,'.'))) }; return {...o, materials:ms}; })}
                                       onBlur={async (e)=>{
-                                        // Живой режим: количество в строке материала трактуем как расход на 1 ед. работы (cpu)
                                         try {
                                           const workId = wb?.work?.code;
                                           const matId = m?.code;
@@ -1507,13 +1535,10 @@ export default function App() {
                                             method: 'POST', headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({ work_id: workId, material_id: matId, consumption_per_work_unit: cpu, waste_coeff: wc })
                                           });
-                                        } catch {}
+                                        } catch { /* ignore upsert error */ }
                                       }}
                                       className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
                                     />
-                                  </td>
-                                  <td role="cell" className="px-2 py-2 text-gray-800">
-                                    <input value={m.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800">{matSum? matSum.toFixed(2): '—'}</td>
                                   <td role="cell" className="px-2 py-2 text-gray-800">—</td>
@@ -1545,7 +1570,7 @@ export default function App() {
                                             console.warn('Ошибка удаления связи работа-материал:', e?.message || e);
                                           }
                                           // Сохраняем снимок только если режим слепка
-                                          if (!LIVE_CALC_NO_SNAPSHOT) { try { await saveEstimateSnapshot(next); } catch {} }
+                                          if (!LIVE_CALC_NO_SNAPSHOT) { try { await saveEstimateSnapshot(next); } catch { /* ignore snapshot error */ } }
                                         }}
                                         className="text-red-600 hover:text-red-700 p-1"
                                         title="Удалить"
@@ -1559,7 +1584,7 @@ export default function App() {
                               );
                             })}
                             <tr className="bg-gray-50 font-semibold" role="row" aria-rowindex={ariaRowIndex + 1 + (wb.materials?.length || 0)} style={{ height: calcRowHeights.total }}>
-                              <td role="cell" className="px-2 py-2 text-gray-800" colSpan={6}>ИТОГО ПО ГРУППЕ:</td>
+                              <td role="cell" className="px-2 py-2 text-gray-800" colSpan={7}>ИТОГО ПО ГРУППЕ:</td>
                               <td role="cell" className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
                               <td role="cell" className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
                               <td role="cell" className="px-2 py-2 text-right">
@@ -1622,7 +1647,7 @@ export default function App() {
                                   // auto-resolve if exact code match
                                   const exact = onlyWorks.find(w => w.id.toLowerCase() === v.trim().toLowerCase());
                                   if (exact) setAddBlockForm(f=> ({...f, resolvedWork: exact, work_input: `${exact.id} — ${exact.name}`}));
-                                } catch { setWorkSuggestions([]);} finally { setWorkSearchLoading(false); }
+                                } catch { setWorkSuggestions([]); /* ignore search error */ } finally { setWorkSearchLoading(false); }
                               }, 300);
                             }}
                             onKeyDown={(e)=> {
@@ -1755,6 +1780,8 @@ export default function App() {
               </div>
             </div>
             </div>
+            ) : active === 'project' ? (
+              <CreateProject />
             ) : active === "works" ? (
             <div className="flex-1 min-h-0">
               <div className="bg-white rounded-xl shadow-sm overflow-hidden h-full flex flex-col">
@@ -1999,7 +2026,10 @@ export default function App() {
                               value={w.name}
                               placeholder="Наименование"
                               onChange={(e) => { updateWork(w.code, 'name', e.target.value); autoGrow(e.target); }}
+                              onInput={(e) => autoGrow(e.currentTarget)}
                               ref={(el)=> el && autoGrow(el)}
+                              rows={1}
+                              style={{ overflowY: 'hidden', resize: 'none' }}
                             />
                           </td>
                           <td role="cell" className="px-2 py-2 text-gray-800">
