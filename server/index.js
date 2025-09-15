@@ -45,6 +45,35 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Debug: show which DB the API is connected to and optional raw rows for a work
+app.get('/api/debug-db', async (req, res) => {
+  try {
+    const u = new URL(CONNECTION_URL);
+    const conn = {
+      host: u.hostname,
+      port: u.port || '5432',
+      database: u.pathname.replace(/^\//, ''),
+      user: u.username || undefined,
+      ssl: /sslmode=require/.test(RAW_URL) || undefined,
+    };
+    const infoQ = await pool.query(
+      "select current_database() as current_database, current_user as current_user, current_schema() as current_schema, current_setting('server_version') as server_version"
+    );
+    const countsQ = await pool.query(
+      "select (select count(*)::int from work_materials) as work_materials, (select count(*)::int from materials) as materials, (select count(*)::int from works_ref) as works_ref"
+    );
+    let rows = [];
+    const workId = (req.query.work_id || '').toString().trim();
+    if (workId) {
+      const r = await pool.query('select * from work_materials where work_id=$1 order by material_id', [workId]);
+      rows = r.rows;
+    }
+    res.json({ ok: true, connection: conn, server: infoQ.rows[0], counts: countsQ.rows[0], rows, note: workId ? undefined : 'pass ?work_id=w.1 to see raw rows' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // BDWM reference endpoints
 app.get('/api/phases', async (req, res) => {
   try {
@@ -401,6 +430,81 @@ app.delete('/api/work-materials/:work_id/:material_id', async (req,res) => {
     await pool.query('delete from work_materials where work_id=$1 and material_id=$2', [req.params.work_id, req.params.material_id]);
     res.json({ ok:true, deleted:true });
   } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+// Atomic replace link (delete old if changed, then upsert new) in single transaction
+app.post('/api/work-materials/replace', async (req, res) => {
+  const { work_id, old_material_id, new_material_id, consumption_per_work_unit, waste_coeff } = req.body || {};
+  if (!work_id || !new_material_id) return res.status(400).json({ ok:false, error:'work_id and new_material_id required' });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    let cpu = consumption_per_work_unit;
+    let wc = waste_coeff;
+    if (cpu === undefined || wc === undefined) {
+      // Try pull from existing old link if present
+      if (old_material_id) {
+        try {
+          const r0 = await client.query('select consumption_per_work_unit, waste_coeff from work_materials where work_id=$1 and material_id=$2', [work_id, old_material_id]);
+          if (r0.rows.length) {
+            if (cpu === undefined) cpu = r0.rows[0].consumption_per_work_unit;
+            if (wc === undefined) wc = r0.rows[0].waste_coeff;
+          }
+        } catch {}
+      }
+    }
+    const cpuVal = (cpu === '' || cpu == null) ? null : Number(String(cpu).replace(/\s+/g,'').replace(/,/g,'.'));
+    const wcVal = (wc === '' || wc == null) ? 1 : Number(String(wc).replace(/\s+/g,'').replace(/,/g,'.'));
+
+    if (old_material_id && old_material_id !== new_material_id) {
+      // Попробуем заменить material_id UPDATE'ом (как вы просили), чтобы было видно именно изменение строки
+      try {
+        const upd = await client.query(
+          'update work_materials set material_id=$1, consumption_per_work_unit=$2, waste_coeff=$3, updated_at=now() where work_id=$4 and material_id=$5',
+          [new_material_id, cpuVal, wcVal, work_id, old_material_id]
+        );
+        if (upd.rowCount === 0) {
+          // старой пары нет — просто upsert новой
+          await client.query(
+            `insert into work_materials(work_id, material_id, consumption_per_work_unit, waste_coeff)
+             values($1,$2,$3,$4)
+             on conflict (work_id, material_id) do update set consumption_per_work_unit=excluded.consumption_per_work_unit, waste_coeff=excluded.waste_coeff, updated_at=now()`,
+            [work_id, new_material_id, cpuVal, wcVal]
+          );
+        }
+      } catch (e) {
+        // Если конфликт по уникальности (такая пара уже есть), то объединим: обновим существующую новую пару и удалим старую
+        if (e && e.code === '23505') {
+          await client.query(
+            'update work_materials set consumption_per_work_unit=$1, waste_coeff=$2, updated_at=now() where work_id=$3 and material_id=$4',
+            [cpuVal, wcVal, work_id, new_material_id]
+          );
+          await client.query('delete from work_materials where work_id=$1 and material_id=$2', [work_id, old_material_id]);
+        } else {
+          throw e;
+        }
+      }
+    } else {
+      // material_id не меняется — просто upsert значений
+      await client.query(
+        `insert into work_materials(work_id, material_id, consumption_per_work_unit, waste_coeff)
+         values($1,$2,$3,$4)
+         on conflict (work_id, material_id) do update set consumption_per_work_unit=excluded.consumption_per_work_unit, waste_coeff=excluded.waste_coeff, updated_at=now()`,
+        [work_id, new_material_id, cpuVal, wcVal]
+      );
+    }
+    // Вернём итоговую строку для надёжной валидации на клиенте
+    const sel = await client.query(
+      `select wm.work_id, wm.material_id, wm.consumption_per_work_unit, wm.waste_coeff
+         from work_materials wm where wm.work_id=$1 and wm.material_id=$2`,
+      [work_id, new_material_id]
+    );
+    await client.query('commit');
+    const row = sel.rows && sel.rows[0] ? sel.rows[0] : null;
+    res.status(201).json({ ok:true, replaced:true, row });
+  } catch (e) {
+    try { await client.query('rollback'); } catch {}
+    res.status(500).json({ ok:false, error:e.message });
+  } finally { client.release(); }
 });
 // Bundles: все работы с их материалами (для массового создания блоков)
 app.get('/api/work-materials-bundles', async (req,res) => {

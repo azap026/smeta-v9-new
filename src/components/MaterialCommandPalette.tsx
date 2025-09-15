@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useMaterialSearch } from '../hooks/useMaterialSearch';
 import './MaterialAutocomplete.css';
+import './MaterialCommandPalette.css';
+import FloatingWindow from './ui/FloatingWindow.jsx';
 
 export type MaterialItem = {
   id: string;
@@ -20,19 +21,21 @@ type Props = {
   initialQuery?: string;
   width?: number;
   heightVh?: number; // viewport height percent for list area
+  currentId?: string;
 };
 
 const ROW_H = 48;
 
-export default function MaterialCommandPalette({ open, onOpenChange, onSelect, initialQuery = '', width = 800, heightVh = 72 }: Props) {
+export default function MaterialCommandPalette({ open, onOpenChange, onSelect, initialQuery = '', width = 800, heightVh = 72, currentId }: Props) {
   const [q, setQ] = useState(initialQuery || '');
   const [activeIdx, setActiveIdx] = useState(0);
+  const [chosenIdx, setChosenIdx] = useState<number | null>(null);
   const listParentRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
   const { items, loading, error } = useMaterialSearch(q, { debounceMs: 200, limit: 50 });
 
   useEffect(() => { if (open) setQ(initialQuery || ''); }, [open, initialQuery]);
-  useEffect(() => { if (!open) setActiveIdx(0); }, [open]);
+  useEffect(() => { if (!open) { setActiveIdx(0); setChosenIdx(null); } }, [open]);
 
   const visibleItems = useMemo<MaterialItem[]>(() => (items as MaterialItem[]) || [], [items]);
 
@@ -50,6 +53,15 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
   }, [totalSize, loading, visibleItems.length]);
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
+  const confirm = useCallback(() => {
+    const idx = (chosenIdx == null) ? activeIdx : chosenIdx;
+    const it = visibleItems[idx];
+    if (!it) return;
+    // если выбран тот же, что и текущий, просто закрыть
+    if (currentId && it.id === currentId) { close(); return; }
+    onSelect(it);
+    close();
+  }, [chosenIdx, activeIdx, visibleItems, onSelect, close, currentId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -64,26 +76,19 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
       else if (e.key === 'PageUp') { e.preventDefault(); setActiveIdx(i => Math.max(0, i - 10)); }
       else if (e.key === 'Enter') {
         e.preventDefault();
+        // Подтверждаем активную строку сразу, без ожидания setState
         const it = visibleItems[activeIdx];
-        if (it) { onSelect(it); close(); }
+        if (it) {
+          if (!currentId || it.id !== currentId) onSelect(it);
+          close();
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, visibleItems, activeIdx, loading, onSelect, close]);
+  }, [open, visibleItems, activeIdx, loading, confirm]);
 
-  const overlayRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (!overlayRef.current) return;
-      if (e.target instanceof Node && e.target === overlayRef.current) {
-        onOpenChange(false);
-      }
-    };
-    document.addEventListener('click', onClick);
-    return () => document.removeEventListener('click', onClick);
-  }, [open, onOpenChange]);
+  // FloatingWindow сам обрабатывает overlay и закрытие по Esc/крестик
 
   const highlight = (txt?: string) => {
     const query = (q || '').trim().toLowerCase();
@@ -110,30 +115,30 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
   if (!open) return null;
 
   // map width to utility classes (avoid inline style); default 800px
-  const widthClass = width >= 860 ? 'max-w-[880px] w-[880px]' : width >= 800 ? 'max-w-[880px] w-[800px]' : 'max-w-[720px] w-[720px]';
-  const maxHClass = heightVh >= 76 ? 'max-h-[76vh]' : heightVh >= 72 ? 'max-h-[72vh]' : 'max-h-[64vh]';
+  // normalize dims via class suffixes
+  const widthSuffix = width >= 860 ? '880' : width >= 800 ? '800' : '720';
+  const heightSuffix = heightVh >= 76 ? '76' : heightVh >= 72 ? '72' : '64';
 
-  const dialog = (
-    <div ref={overlayRef} className="fixed inset-0 z-[2147483646] bg-black/20 backdrop-blur-sm flex items-center justify-center">
-      <div className={`bg-white rounded-2xl shadow-2xl w-full ${widthClass}`}>
-        <div className="p-3 border-b">
-          <input
-            autoFocus
-            value={q}
-            onChange={(e)=> setQ(e.target.value)}
-            placeholder="Название или артикул…"
-            className="w-full text-base outline-none placeholder:text-gray-400"
-          />
-        </div>
-        <div
-          ref={listParentRef}
-          className={`overflow-auto ${maxHClass}`}
-          role="listbox"
-          aria-label="Список материалов"
-          aria-activedescendant={visibleItems[activeIdx]?.id ? `mcp-opt-${visibleItems[activeIdx]?.id}` : undefined}
-          tabIndex={0}
-        >
-          <div ref={measureRef} className="relative">
+  const content = (
+    <div className={`mcp-container mcp-h-${heightSuffix}`}>
+      <div className="mcp-header">
+        <input
+          autoFocus
+          value={q}
+          onChange={(e)=> setQ(e.target.value)}
+          placeholder="Введите наименование материала…"
+          className="mcp-input"
+        />
+      </div>
+      <div
+        ref={listParentRef}
+        className="mcp-list"
+        role="listbox"
+        aria-label="Список материалов"
+        aria-activedescendant={visibleItems[activeIdx]?.id ? `mcp-opt-${visibleItems[activeIdx]?.id}` : undefined}
+        tabIndex={0}
+      >
+        <div ref={measureRef} className="mcp-measure">
             {rowVirtualizer.getVirtualItems().map((row) => {
               const idx = row.index;
               const isSkeleton = loading && !visibleItems.length;
@@ -144,7 +149,7 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
                   {isSkeleton ? (
                     <div
                       key={row.key}
-                      className={`absolute left-0 w-full`}
+                      className="mcp-skel"
                       ref={(el) => {
                         if (!el) return;
                         el.style.top = '0px';
@@ -152,11 +157,11 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
                         el.style.transform = `translateY(${row.start}px)`;
                       }}
                     >
-                      <div className="h-full px-3 flex items-center gap-3">
-                        <div className="h-3 w-16 bg-gray-200 rounded" />
-                        <div className="h-3 flex-1 bg-gray-200 rounded" />
-                        <div className="h-3 w-24 bg-gray-200 rounded" />
-                        <div className="h-7 w-7 bg-gray-200 rounded" />
+                      <div className="mcp-skel-row">
+                        <div className="mcp-skel-bar mcp-skel-64" />
+                        <div className="mcp-skel-bar mcp-skel-flex" />
+                        <div className="mcp-skel-bar mcp-skel-96" />
+                        <div className="mcp-skel-bar mcp-skel-28" />
                       </div>
                     </div>
                   ) : it ? (
@@ -164,8 +169,7 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
                       key={row.key}
                       id={`mcp-opt-${(it as MaterialItem).id}`}
                       role="option"
-                      aria-selected={selected ? 'true' : undefined}
-                      className={`${selected ? 'bg-gray-100' : ''} hover:bg-gray-50 cursor-pointer absolute left-0 w-full`}
+                      className={`mcp-item ${selected ? 'selected' : ''}`}
                       ref={(el) => {
                         if (!el) return;
                         el.style.top = '0px';
@@ -173,23 +177,23 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
                         el.style.transform = `translateY(${row.start}px)`;
                       }}
                       onMouseEnter={()=> setActiveIdx(idx)}
-                      onClick={()=> { onSelect(it as MaterialItem); close(); }}
+                      onClick={()=> { setActiveIdx(idx); setChosenIdx(idx); }}
                     >
-                      <div className="h-full px-3 flex items-center justify-between gap-3">
+                      <div className="mcp-item-row">
                         {/* Левая часть: код + название */}
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs text-gray-500 truncate">{(it as MaterialItem).sku || (it as MaterialItem).id}</div>
-                          <div className="text-sm font-medium truncate">{highlight((it as MaterialItem).name)}</div>
+                        <div className="mcp-left">
+                          <div className="mcp-code">{(it as MaterialItem).sku || (it as MaterialItem).id}</div>
+                          <div className="mcp-name">{highlight((it as MaterialItem).name)}</div>
                         </div>
                         {/* Правая часть: цена и ед. */}
-                        <div className="flex items-center gap-3">
-                          <div className="text-right text-sm">{fmtPrice((it as MaterialItem).unit_price)}</div>
-                          <div className="text-xs text-gray-500 whitespace-nowrap">{(it as MaterialItem).unit || '—'}</div>
-                          <div className="flex items-center justify-center w-9">
+                        <div className="mcp-right">
+                          <div className="mcp-price">{fmtPrice((it as MaterialItem).unit_price)}</div>
+                          <div className="mcp-unit">{(it as MaterialItem).unit || '—'}</div>
+                          <div className="mcp-thumb">
                             {(it as MaterialItem).image ? (
-                              <img src={(it as MaterialItem).image || ''} alt="" className="w-7 h-7 object-contain block rounded" onError={(e)=>{(e.currentTarget as HTMLImageElement).style.display='none';}} />
+                              <img src={(it as MaterialItem).image || ''} alt="" className="mcp-img" onError={(e)=>{(e.currentTarget as HTMLImageElement).style.display='none';}} />
                             ) : (
-                              <div className="w-7 h-7 bg-gray-100 rounded" />
+                              <div className="mcp-img-fallback" />
                             )}
                           </div>
                         </div>
@@ -200,21 +204,40 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
               );
             })}
           </div>
-        </div>
-        {!loading && !error && visibleItems.length === 0 && (
-          <div className="py-6 text-center text-sm text-gray-500">Ничего не найдено</div>
-        )}
-        {!!error && (
-          <div className="py-4 text-center">
-            <div className="text-sm text-red-600 mb-2">{error}</div>
-            <button className="px-3 py-1 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50" onClick={()=> setQ(q => q + ' ')}>Повторить</button>
-          </div>
-        )}
       </div>
+      {!loading && !error && visibleItems.length === 0 && (
+        <div className="mcp-empty">Ничего не найдено</div>
+      )}
+      {!!error && (
+        <div className="mcp-error">
+          <div className="mcp-error-text">{error}</div>
+          <button className="mcp-retry" onClick={()=> setQ(q => q + ' ')}>Повторить</button>
+        </div>
+      )}
     </div>
   );
 
-  return createPortal(dialog, document.body);
+  const idxForAction = (chosenIdx == null) ? activeIdx : chosenIdx;
+  const disableReplace = !visibleItems[idxForAction] || (currentId ? visibleItems[idxForAction]!.id === currentId : false);
+  return (
+    <FloatingWindow
+      open={open}
+      onClose={() => onOpenChange(false)}
+      title="Выбор материала"
+      width={parseInt(widthSuffix, 10)}
+      center
+      overlay
+      footer={
+        <div className="mcp-actions">
+          <button className="mcp-btn" onClick={()=> onOpenChange(false)}>Отмена</button>
+          <button className="mcp-btn mcp-btn-primary" disabled={disableReplace} onClick={confirm}>Заменить</button>
+        </div>
+      }
+      persistKey="material-cmd"
+    >
+      {content}
+    </FloatingWindow>
+  );
 }
 
 // keep measure height in sync without inline JSX styles

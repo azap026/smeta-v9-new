@@ -50,6 +50,8 @@ import { rowHeights as _rowHeights, overscanDefaults } from './virtualizationCon
 // import { exportToCSV } from './utils/exporters.js';
 
 export default function App() {
+  // Живой режим: считаем материалы из work_materials на лету и не сохраняем снимок сметы
+  const LIVE_CALC_NO_SNAPSHOT = true;
   // Активная вкладка: читаем из localStorage, по умолчанию 'calc'
   const [active, setActive] = useState(() => {
     try { return localStorage.getItem('activeTab') || 'calc'; } catch { return 'calc'; }
@@ -202,6 +204,7 @@ export default function App() {
   }, [calcBlocks]);
 
   async function saveEstimateSnapshot(blocksArg) {
+    if (LIVE_CALC_NO_SNAPSHOT) return true;
     try {
       setEstimateSaving(true);
       const payload = buildEstimatePayload(blocksArg);
@@ -226,6 +229,7 @@ export default function App() {
 
   // Полная очистка сохранённой сметы (снимка) по коду 'current'
   async function clearEstimateSnapshot() {
+    if (LIVE_CALC_NO_SNAPSHOT) return true;
     try {
       setEstimateSaving(true);
       const payload = { code: 'current', title: 'Текущая смета', items: [], clear: true };
@@ -325,6 +329,7 @@ export default function App() {
 
   // Автосохранение сметы (debounce 1000ms)
   useEffect(() => {
+  if (LIVE_CALC_NO_SNAPSHOT) return; // живой режим: не автосохраняем
   // Всегда сносим прежний таймер перед любыми ранними выходами,
   // чтобы не ушёл старый пустой снимок
   if (estimateSaveTimer.current) { clearTimeout(estimateSaveTimer.current); estimateSaveTimer.current = null; }
@@ -511,7 +516,7 @@ export default function App() {
   suppressNextAutosave.current = true;
   setCalcBlocks(nextBlocks);
   // Немедленное сохранение после добавления блока (без ожидания дебаунса)
-  await saveEstimateSnapshot(nextBlocks);
+  if (!LIVE_CALC_NO_SNAPSHOT) await saveEstimateSnapshot(nextBlocks);
     setAddBlockModal(false);
     setCreatingBlock(false);
   };
@@ -958,13 +963,21 @@ export default function App() {
       const r = await fetch('/api/work-materials-bundles');
       const j = await r.json().catch(()=>({}));
       if(!r.ok || !j.ok || !Array.isArray(j.items)) { alert('Ошибка загрузки связок'); return; }
-      const newBlocks = j.items.map(it=>({
-        id: 'bulk_'+it.work.id+'_'+Math.random().toString(36).slice(2),
-        groupName: it.work.stage_name || it.work.substage_name || '',
-        work: { code: it.work.id, name: it.work.name, unit: it.work.unit||'', quantity:'', unit_price: it.work.unit_price!=null? String(it.work.unit_price):'', image:'', labor_total:0, stage_id: it.work.stage_id, substage_id: it.work.substage_id },
-        materials: it.materials
-      }));
-  const nextBlocks = [...calcBlocks, ...newBlocks];
+      // Перезаписываем существующие блоки по work_id, чтобы не создавать дубликаты
+      const existingByWork = new Map(calcBlocks.map(b => [b?.work?.code, b]));
+      const incomingByWork = new Map();
+      for (const it of j.items) {
+        const prev = existingByWork.get(it.work.id);
+        const block = {
+          id: prev ? prev.id : ('bulk_'+it.work.id),
+          groupName: it.work.stage_name || it.work.substage_name || '',
+          work: { code: it.work.id, name: it.work.name, unit: it.work.unit||'', quantity:'', unit_price: it.work.unit_price!=null? String(it.work.unit_price):'', image:'', labor_total:0, stage_id: it.work.stage_id, substage_id: it.work.substage_id },
+          materials: it.materials
+        };
+        incomingByWork.set(it.work.id, block);
+      }
+      const kept = calcBlocks.filter(b => !incomingByWork.has(b?.work?.code));
+      const nextBlocks = [...kept, ...incomingByWork.values()];
   suppressNextAutosave.current = true;
   setCalcBlocks(nextBlocks);
   // Сохраним сразу после импорта, чтобы не потерять после перезагрузки
@@ -1209,7 +1222,9 @@ export default function App() {
                     <span>Очистить связи</span>
                   </button>
                   <div className="flex items-center text-xs text-gray-500 ml-2">
-                    {estimateSaving ? (
+                    {LIVE_CALC_NO_SNAPSHOT ? (
+                      <span className="flex items-center gap-1 text-blue-600"><span className="material-symbols-outlined text-base">visibility</span> Живой режим норм</span>
+                    ) : estimateSaving ? (
                       <span className="flex items-center gap-1"><span className="material-symbols-outlined animate-spin-slow text-base">progress_activity</span> Сохраняю…</span>
                     ) : estimateSavedAt ? (
                       <span className="flex items-center gap-1 text-green-600"><span className="material-symbols-outlined text-base">check_circle</span> Сохранено {estimateSavedAt.toLocaleTimeString()}</span>
@@ -1293,10 +1308,41 @@ export default function App() {
                       }
                       if (row.kind === 'block') {
                         const wb = row.block;
-                        const workSum = (parseFloat(wb.work.quantity)||0) * (parseFloat(wb.work.unit_price)||0);
-                        const matsTotal = (wb.materials||[]).reduce((s,m)=> s + ((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)),0);
+                        const workQty = (parseFloat(wb.work.quantity)||0);
+                        const workSum = workQty * (parseFloat(wb.work.unit_price)||0);
+                        const matsTotal = (wb.materials||[]).reduce((s,m)=> {
+                          if (!LIVE_CALC_NO_SNAPSHOT) {
+                            return s + (((parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0)));
+                          }
+                          const cpu = (m.cpu != null ? parseFloat(m.cpu) : parseFloat(m.quantity)) || 0; // cpu: расход на 1 ед. работы
+                          const wc = (m.wc != null ? parseFloat(m.wc) : 1) || 1;
+                          const effQty = workQty * cpu * wc;
+                          return s + (effQty * ((parseFloat(m.unit_price)||0)));
+                        },0);
                         const onUpd = (fn) => updateBlock(wb.id, fn);
-                        const onRemove = () => setCalcBlocks(prev => prev.filter(b => b.id !== wb.id));
+                        const onRemove = async () => {
+                          // При удалении блока чистим только те связи работа↔материал, которые присутствуют в этом блоке
+                          const workId = wb?.work?.code;
+                          try {
+                            if (workId) {
+                              const codes = Array.from(new Set((wb.materials || []).map(m => m && m.code).filter(Boolean)));
+                              if (codes.length) {
+                                const dels = codes.map(mid => fetch(`/api/work-materials/${encodeURIComponent(workId)}/${encodeURIComponent(mid)}`, { method: 'DELETE' }).catch(()=>{}));
+                                await Promise.allSettled(dels);
+                              }
+                            }
+                          } catch (e) {
+                            // Логируем, но продолжаем удаление блока из UI
+                            console.warn('Ошибка удаления связей для материалов блока', workId, e?.message || e);
+                          }
+                          // Удаляем блок из локального состояния
+                          suppressNextAutosave.current = true;
+                          const next = calcBlocks.filter(b => b.id !== wb.id);
+                          setCalcBlocks(next);
+                          if (!LIVE_CALC_NO_SNAPSHOT) {
+                            try { await saveEstimateSnapshot(next); } catch {}
+                          }
+                        };
                         return (
                           <React.Fragment key={row.key}>
                             <tr role="row" aria-rowindex={ariaRowIndex}>
@@ -1331,11 +1377,23 @@ export default function App() {
                             </tr>
                             {(wb.materials||[]).map((m, mi) => {
                               const matSum = (parseFloat(m.quantity)||0) * (parseFloat(m.unit_price)||0);
+                              // ref to control palette open (use createRef to avoid hooks-in-loop)
+                              const matAutoRef = React.createRef();
                               return (
                                 <tr key={row.key+':m:'+mi} role="row" aria-rowindex={ariaRowIndex+1+mi}>
-                                  <td role="cell" className="px-2 py-2 text-gray-800"></td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800 whitespace-nowrap">
+                                    <button
+                                      type="button"
+                                      className="text-primary-600 hover:text-primary-700 inline-flex items-center gap-1"
+                                      title="Заменить материал"
+                                      onClick={()=> matAutoRef.current?.openPalette('')}
+                                    >
+                                      <span className="material-symbols-outlined text-base align-middle">swap_horiz</span>
+                                    </button>
+                                  </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
                                     <MaterialAutocomplete
+                                      ref={matAutoRef}
                                       value={{ id: m.code, name: m.name }}
                                       currentId={m.code}
                                       onSelect={async (mat)=>{
@@ -1361,12 +1419,64 @@ export default function App() {
                                         // Подавим ближайший автосейв — выполняем явное сохранение ниже
                                         suppressNextAutosave.current = true;
                                         setCalcBlocks(deduped);
+                                        // Обновим нормативную связь в БД (work_materials): перезапишем всю строку
+                                        // 1) считаем старые cpu/wc из БД (если были), чтобы не потерять коэффициент
+                                        // 2) если id материала изменился — удалим старую пару
+                                        // 3) всегда upsert новой пары с полями consumption_per_work_unit и waste_coeff
                                         try {
-                                          await saveEstimateSnapshot(deduped);
+                                          const workId = wb?.work?.code;
+                                          const oldMatId = m?.code || null;
+                                          const newMatId = mat?.id;
+                                          if (workId && newMatId) {
+                                            // Получим старые значения cpu/wc
+                                            let oldCpu = null;
+                                            let oldWc = 1;
+                                            try {
+                                              const r0 = await fetch(`/api/work-materials/${encodeURIComponent(workId)}`);
+                                              if (r0.ok) {
+                                                const j0 = await r0.json().catch(()=>({}));
+                                                const arr = Array.isArray(j0?.items) ? j0.items : [];
+                                                const found = oldMatId ? arr.find(it => it.material_id === oldMatId) : null;
+                                                if (found) {
+                                                  if (found.consumption_per_work_unit != null) oldCpu = Number(found.consumption_per_work_unit);
+                                                  if (found.waste_coeff != null) oldWc = Number(found.waste_coeff) || 1;
+                                                }
+                                              }
+                                            } catch {}
+                                            // Возьмём расход из текущей строки (если есть), иначе из старой связи; коэффициент отходов — из старой связи (или 1)
+                                            const uiCpu = (m && m.quantity != null && m.quantity !== '') ? Number(String(m.quantity).replace(/\s+/g,'').replace(/,/g,'.')) : null;
+                                            const cpu = (uiCpu!=null && !Number.isNaN(uiCpu)) ? uiCpu : (oldCpu!=null && !Number.isNaN(oldCpu) ? oldCpu : null);
+                                            const wc = (oldWc!=null && !Number.isNaN(oldWc)) ? oldWc : 1;
+                                            // Атомарная замена на сервере
+                                            const upR = await fetch('/api/work-materials/replace', {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ work_id: workId, old_material_id: oldMatId, new_material_id: newMatId, consumption_per_work_unit: cpu, waste_coeff: wc })
+                                            });
+                                            if (!upR.ok) {
+                                              let msg = 'HTTP ' + upR.status;
+                                              try { const j = await upR.json(); if (j && j.error) msg = j.error; } catch {}
+                                              console.warn('POST work-materials failed:', msg);
+                                              alert('Не удалось обновить нормативную связь: ' + msg);
+                                            } else {
+                                              try {
+                                                const j = await upR.json();
+                                                if (!j?.row) {
+                                                  console.warn('work-materials replace responded without row; server could not confirm insert');
+                                                } else {
+                                                  console.log('work-materials replace ok:', j.row);
+                                                }
+                                              } catch { console.log('work-materials upsert ok'); }
+                                            }
+                                          }
                                         } catch (e) {
-                                          // Откатим изменения в UI, если сохранение не удалось
-                                          setCalcBlocks(prevBlocks);
-                                          alert('Не удалось применить материал: '+(e.message||e));
+                                          // Не блокируем сохранение сметы из‑за ошибки обновления нормативов
+                                          console.warn('Не удалось обновить нормативную связь work-materials:', e?.message || e);
+                                          alert('Ошибка обновления связи работа-материал: ' + (e?.message || e));
+                                        }
+                                        if (!LIVE_CALC_NO_SNAPSHOT) {
+                                          try { await saveEstimateSnapshot(deduped); }
+                                          catch (e) { setCalcBlocks(prevBlocks); alert('Не удалось применить материал: '+(e.message||e)); }
                                         }
                                       }}
                                     />
@@ -1380,7 +1490,27 @@ export default function App() {
                                     <input value={m.unit} placeholder="ед" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800">
-                                    <input value={m.quantity} placeholder="0" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                    <input
+                                      value={m.quantity}
+                                      placeholder="0"
+                                      onChange={(e)=> onUpd(o=>{ const v=e.target.value; const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:v, cpu: (v===''? null : Number(String(v).replace(/\s+/g,'').replace(/,/g,'.'))) }; return {...o, materials:ms}; })}
+                                      onBlur={async (e)=>{
+                                        // Живой режим: количество в строке материала трактуем как расход на 1 ед. работы (cpu)
+                                        try {
+                                          const workId = wb?.work?.code;
+                                          const matId = m?.code;
+                                          if (!workId || !matId) return;
+                                          const v = e.currentTarget.value;
+                                          const cpu = (v===''||v==null) ? null : Number(String(v).replace(/\s+/g,'').replace(/,/g,'.'));
+                                          const wc = (m && m.wc != null) ? m.wc : 1;
+                                          await fetch('/api/work-materials', {
+                                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ work_id: workId, material_id: matId, consumption_per_work_unit: cpu, waste_coeff: wc })
+                                          });
+                                        } catch {}
+                                      }}
+                                      className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                    />
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800">
                                     <input value={m.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
@@ -1390,7 +1520,33 @@ export default function App() {
                                   <td role="cell" className="px-2 py-2 text-right">
                                     {wb.materials.length>1 && (
                                       <button
-                                        onClick={()=> onUpd(o=>({...o, materials: o.materials.filter((_,j)=> j!==mi)}))}
+                                        onClick={async ()=>{
+                                          // Удаление строки материала: чистим локально, синхронно удаляем связь в БД и сохраняем снимок
+                                          const workId = wb?.work?.code;
+                                          const matId = m?.code;
+                                          const prev = calcBlocks;
+                                          const next = prev.map(bb => {
+                                            if (bb.id !== wb.id) return bb;
+                                            return { ...bb, materials: bb.materials.filter((_, j) => j !== mi) };
+                                          });
+                                          // Подавим ближайший автосейв – сделаем явное сохранение ниже
+                                          suppressNextAutosave.current = true;
+                                          setCalcBlocks(next);
+                                          // Удалим нормативную связь, если была выбрана (matId может быть пустым у новых строк)
+                                          try {
+                                            if (workId && matId) {
+                                              const rDel = await fetch(`/api/work-materials/${encodeURIComponent(workId)}/${encodeURIComponent(matId)}`, { method: 'DELETE' });
+                                              if (!rDel.ok) {
+                                                try { const jj = await rDel.json(); console.warn('DELETE work-materials failed:', jj?.error || rDel.status); }
+                                                catch { console.warn('DELETE work-materials failed: HTTP', rDel.status); }
+                                              }
+                                            }
+                                          } catch (e) {
+                                            console.warn('Ошибка удаления связи работа-материал:', e?.message || e);
+                                          }
+                                          // Сохраняем снимок только если режим слепка
+                                          if (!LIVE_CALC_NO_SNAPSHOT) { try { await saveEstimateSnapshot(next); } catch {} }
+                                        }}
                                         className="text-red-600 hover:text-red-700 p-1"
                                         title="Удалить"
                                         aria-label="Удалить"
