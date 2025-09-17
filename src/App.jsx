@@ -1211,6 +1211,11 @@ export default function App() {
   // Панель управления ширинами колонок
   const [showWidthPanel, setShowWidthPanel] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false); // мобильное меню
+  // Excel-like grid mode (visual borders)
+  const [excelGrid, setExcelGrid] = useState(()=>{
+    try { return localStorage.getItem('excelGrid') === '1'; } catch { return false; }
+  });
+  useEffect(()=>{ try { localStorage.setItem('excelGrid', excelGrid ? '1':'0'); } catch{} }, [excelGrid]);
   // Подгрузим справочник работ (только группы) при открытой вкладке calc для отображения названий разделов вместо кода
   useEffect(() => {
     if (active !== 'calc') return;
@@ -1546,6 +1551,15 @@ export default function App() {
                       <span className="material-symbols-outlined text-base">tune</span>
                       <span>Ширины</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={()=> setExcelGrid(v=> !v)}
+                      className={"bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-2 py-1 rounded text-xs flex items-center gap-1 "+(excelGrid? 'bg-green-50 border-green-400':'')}
+                      title="Excel сетка (границы)"
+                    >
+                      <span className="material-symbols-outlined text-base">grid_on</span>
+                      <span>Excel</span>
+                    </button>
                     {calcWidthMode==='fixed' && (
                       <div className="flex items-center gap-1 text-xs">
                         <input
@@ -1615,7 +1629,7 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                <div className="flex-1 min-h-0 overflow-auto" style={calcMaxHeight ? { maxHeight: calcMaxHeight } : undefined}>
+                <div className={"flex-1 min-h-0 overflow-auto "+(excelGrid? 'app-excel-grid':'')} style={calcMaxHeight ? { maxHeight: calcMaxHeight } : undefined}>
                   <div className="overflow-x-auto overflow-y-visible h-full">
   <table className="w-full" style={{ tableLayout: 'fixed', minWidth: (effectiveCalcWidths ? Object.values(effectiveCalcWidths).reduce((a,b)=> a + (typeof b==='number'? b:0),0) : (calcColWidths.nameMin + 520)) }}>
                   <colgroup>
