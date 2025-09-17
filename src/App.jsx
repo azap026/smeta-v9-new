@@ -157,6 +157,27 @@ export default function App() {
   const [calcBlocks, setCalcBlocks] = useState([]); // [{id, groupName, work:{}, materials:[{}}]]
   // Inline вставка материала под выбранной строкой
   const [addMatInline, setAddMatInline] = useState(null); // { blockId, afterIndex }
+  // Сворачивание материалов внутри блока расчёта
+  const [collapsedCalc, setCollapsedCalc] = useState(()=>({})); // { [blockId]: true }
+  const toggleBlockMaterials = (blockId) => {
+    setCollapsedCalc(prev => {
+      const next = { ...prev, [blockId]: !prev[blockId] };
+      // Если сворачиваем блок с активной вставкой — сбрасываем
+      if (next[blockId] && addMatInline && addMatInline.blockId === blockId) setAddMatInline(null);
+      return next;
+    });
+  };
+  // Скрывать материалы по умолчанию для новых блоков
+  useEffect(()=>{
+    setCollapsedCalc(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const b of calcBlocks) {
+        if (b.id != null && !(b.id in next)) { next[b.id] = true; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [calcBlocks]);
   const startAddMaterialBelow = (blockId, afterIndex) => setAddMatInline({ blockId, afterIndex });
   const cancelAddMaterialInline = () => setAddMatInline(null);
   const handleSelectNewMaterial = async (blockId, afterIndex, mat) => {
@@ -1403,7 +1424,19 @@ export default function App() {
                         return (
                           <React.Fragment key={row.key}>
                             <tr role="row" aria-rowindex={ariaRowIndex}>
-                              <td role="cell" className="px-2 py-2 text-gray-800">{wb.work.code}</td>
+                              <td role="cell" className="px-2 py-2 text-gray-800 whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={()=> toggleBlockMaterials(wb.id)}
+                                  className="inline-flex items-center text-primary-600 hover:text-primary-700 mr-1"
+                                  title={collapsedCalc[wb.id] ? 'Показать материалы' : 'Скрыть материалы'}
+                                >
+                                  <span className="material-symbols-outlined text-base align-middle">
+                                    {collapsedCalc[wb.id] ? 'chevron_right' : 'expand_more'}
+                                  </span>
+                                </button>
+                                {wb.work.code}
+                              </td>
                               <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
                                 <textarea
                                   rows={1}
@@ -1426,13 +1459,15 @@ export default function App() {
                               <td role="cell" className="px-2 py-2 text-gray-800">
                                 <input value={wb.work.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit_price:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
                               </td>
-                              <td role="cell" className="px-2 py-2 text-gray-800">—</td>
+                              <td role="cell" className="px-2 py-2 text-gray-800">
+                                {collapsedCalc[wb.id] ? (matsTotal? matsTotal.toFixed(2): '—') : '—'}
+                              </td>
                               <td role="cell" className="px-2 py-2 font-semibold text-right text-gray-800">{workSum ? workSum.toFixed(2) : '—'}</td>
                               <td role="cell" className="px-2 py-2">
                                 <button onClick={()=> onUpd(o=>({...o, materials:[...o.materials, { name:'', unit:'', quantity:'', unit_price:'', total:'' }]}))} className="bg-primary-50 text-primary-600 px-2 py-1 rounded text-xs mr-2">+ Материал</button>
                               </td>
                             </tr>
-                            {(wb.materials||[]).map((m, mi) => {
+                            {!collapsedCalc[wb.id] && (wb.materials||[]).map((m, mi) => {
                               const cpuVal = (m?.cpu != null ? parseFloat(m.cpu) : parseFloat(m.quantity)) || 0;
                               const effQty = (parseFloat(wb.work.quantity)||0) * cpuVal; // Кол-во = CPU × Кол-во работ
                               const roundedQty = Math.ceil(effQty);
@@ -1650,16 +1685,18 @@ export default function App() {
                                 </React.Fragment>
                               );
                             })}
-                            <tr className="bg-gray-50 font-semibold" role="row" aria-rowindex={ariaRowIndex + 1 + (wb.materials?.length || 0)} style={{ height: calcRowHeights.total }}>
-                              <td role="cell" className="px-2 py-2 text-gray-800" colSpan={7}>ИТОГО ПО ГРУППЕ:</td>
-                              <td role="cell" className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
-                              <td role="cell" className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
-                              <td role="cell" className="px-2 py-2 text-right">
-                                <button onClick={onRemove} className="text-red-600 hover:text-red-700 p-1" title="Удалить блок" aria-label="Удалить блок">
-                                  <span className="material-symbols-outlined text-base align-middle">delete</span>
-                                </button>
-                              </td>
-                            </tr>
+                            {!collapsedCalc[wb.id] && (
+                              <tr className="bg-gray-50 font-semibold" role="row" aria-rowindex={ariaRowIndex + 1 + (wb.materials?.length || 0)} style={{ height: calcRowHeights.total }}>
+                                <td role="cell" className="px-2 py-2 text-gray-800" colSpan={7}>ИТОГО ПО ГРУППЕ:</td>
+                                <td role="cell" className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
+                                <td role="cell" className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
+                                <td role="cell" className="px-2 py-2 text-right">
+                                  <button onClick={onRemove} className="text-red-600 hover:text-red-700 p-1" title="Удалить блок" aria-label="Удалить блок">
+                                    <span className="material-symbols-outlined text-base align-middle">delete</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            )}
                           </React.Fragment>
                         );
                       }
