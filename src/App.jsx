@@ -1815,7 +1815,7 @@ export default function App() {
                                       if(e.key==='Enter') { e.preventDefault(); e.currentTarget.blur(); }
                                       else if(e.key==='Escape') { e.preventDefault(); setEditingWorkQtyBlockId(null); e.currentTarget.blur(); }
                                     }}
-                                    style={{ width: calcCellInputWidths.work.quantity, textAlign:'right' }}
+                                    style={{ width: calcCellInputWidths.work.quantity, textAlign:'left' }}
                                     className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
                                   />
                                 </div>
@@ -1826,17 +1826,17 @@ export default function App() {
                                     value={wb.work.unit_price}
                                     placeholder="0"
                                     onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit_price: normalizeDecimalInput(e.target.value,1)}}))}
-                                    style={{ width: calcCellInputWidths.work.unit_price, textAlign:'right' }}
+                                    style={{ width: calcCellInputWidths.work.unit_price, textAlign:'left' }}
                                     className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
                                   />
                                 </div>
                               </td>
                               <td role="cell" className="px-2 py-2 text-gray-800">
-                                <div className="calc-col calc-col-mats-sum">
+                                <div className="calc-col calc-col-mats-sum text-left">
                                   {collapsedCalc[wb.id] ? (matsTotal? formatDec2(matsTotal): '—') : '—'}
                                 </div>
                               </td>
-                              <td role="cell" className="px-2 py-2 font-semibold text-right text-gray-800">
+                              <td role="cell" className="px-2 py-2 font-semibold text-left text-gray-800">
                                 <div className="calc-col calc-col-work-sum">{workSum ? formatDec2(workSum) : '—'}</div>
                               </td>
                               <td role="cell" className="px-2 py-2">
@@ -1987,7 +1987,7 @@ export default function App() {
                                     </div>
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800 text-right">
-                                    <div className="calc-col calc-col-m-effqty">{roundedQty ? formatDec2(roundedQty) : '—'}</div>
+                                    <div className="calc-col calc-col-m-effqty text-left">{roundedQty ? formatDec2(roundedQty) : '—'}</div>
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800">
                                     <div className="calc-col calc-col-m-unitprice">
@@ -1995,7 +1995,7 @@ export default function App() {
                                       value={m.unit_price}
                                       placeholder="0"
                                       onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price: normalizeDecimalInput(e.target.value,1)}; return {...o, materials:ms}; })}
-                                      style={{ width: calcCellInputWidths.material.unit_price, textAlign:'right' }}
+                                      style={{ width: calcCellInputWidths.material.unit_price, textAlign:'left' }}
                                       className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
                                     />
                                     </div>
@@ -2021,12 +2021,12 @@ export default function App() {
                                           });
                                         } catch { /* ignore upsert error */ }
                                       }}
-                                      style={{ width: calcCellInputWidths.material.cpu, textAlign:'right' }}
+                                      style={{ width: calcCellInputWidths.material.cpu, textAlign:'left' }}
                                       className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
                                     />
                                     </div>
                                   </td>
-                                  <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-m-sum">{matSum? formatDec2(matSum): '—'}</div></td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-m-sum text-left">{matSum? formatDec2(matSum): '—'}</div></td>
                                   <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-m-labor">—</div></td>
                                   <td role="cell" className="px-2 py-2 text-right">
                                     <div className="calc-col calc-col-m-row-actions">
@@ -2095,8 +2095,8 @@ export default function App() {
                             {!collapsedCalc[wb.id] && (
                               <tr className="bg-gray-50 font-semibold" role="row" aria-rowindex={ariaRowIndex + 1 + (wb.materials?.length || 0)} style={{ height: calcRowHeights.total }}>
                                 <td role="cell" className="px-2 py-2 text-gray-800" colSpan={7}><div className="calc-col calc-col-total-label">ИТОГО ПО ГРУППЕ:</div></td>
-                                <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-total-mats">{matsTotal? formatDec2(matsTotal): '—'}</div></td>
-                                <td role="cell" className="px-2 py-2 text-primary-700"><div className="calc-col calc-col-total-work">{workSum? formatDec2(workSum): '—'}</div></td>
+                                <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-total-mats text-left">{matsTotal? formatDec2(matsTotal): '—'}</div></td>
+                                <td role="cell" className="px-2 py-2 text-primary-700"><div className="calc-col calc-col-total-work text-left">{workSum? formatDec2(workSum): '—'}</div></td>
                                 <td role="cell" className="px-2 py-2 text-right">
                                   <div className="calc-col calc-col-total-actions">
                                     <button onClick={onRemove} className="text-red-600 hover:text-red-700 p-1" title="Удалить блок" aria-label="Удалить блок">

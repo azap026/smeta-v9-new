@@ -991,8 +991,10 @@ select.text-sm {
 .app-excel-grid .calc-col-m-row-actions button:hover { background:#f1f5f9; }
 .app-excel-grid .code-text { font-weight:600; color:#0f172a; }
 .app-excel-grid .calc-col-m-sum, .app-excel-grid .calc-col-total-mats, .app-excel-grid .calc-col-work-sum, .app-excel-grid .calc-col-total-work { font-weight:600; }
-.app-excel-grid .calc-col-m-cpu input { text-align:right; }
-.app-excel-grid .calc-col-workqty input, .app-excel-grid .calc-col-workprice input, .app-excel-grid .calc-col-m-unitprice input { text-align:right; }
+.app-excel-grid .calc-col-m-cpu input,
+.app-excel-grid .calc-col-workqty input,
+.app-excel-grid .calc-col-workprice input,
+.app-excel-grid .calc-col-m-unitprice input { text-align:left; }
 .app-excel-grid .calc-col-m-name .MaterialAutocomplete input { font-size:12px; }
 .app-excel-grid .calc-col-m-image div { background:#fff; border:1px solid #d1d9e6; }
 .app-excel-grid .calc-col-m-image img { image-rendering: -webkit-optimize-contrast; }
