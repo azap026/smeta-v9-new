@@ -55,7 +55,7 @@ function formatDec2(v) {
 // Меняйте здесь — обновятся все таблицы
 const previewSizes = {
   refMaterial:  { w: 28, h: 28, offsetX: 0,  offsetY: 0,   scale: 1 }, // Справочник материалов
-  calcMaterial: { w: 36, h: 36, offsetX: 0,  offsetY: 0,   scale: 1 }, // Таблица расчета (смещение убрано для стабильной сетки)
+  calcMaterial: { w: 30, h: 30, offsetX: 0,  offsetY: 0,   scale: 1 }, // Таблица расчета (смещение убрано для стабильной сетки)
   // Пример дополнительного профиля:
   // summary: { w: 48, h: 48, offsetX: 100, offsetY: 100, scale: 1 }
 };
@@ -1874,7 +1874,7 @@ export default function App() {
                                     </button>
                                     </div>
                                   </td>
-                                  <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
+                                  <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'bottom' }}>
                                     <div className="calc-col calc-col-m-name">
                                     <MaterialAutocomplete
                                       ref={matAutoRef}

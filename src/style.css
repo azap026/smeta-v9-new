@@ -999,6 +999,16 @@ select.text-sm {
 .app-excel-grid .calc-col-m-image div { background:#fff; border:1px solid #d1d9e6; }
 .app-excel-grid .calc-col-m-image img { image-rendering: -webkit-optimize-contrast; }
 
+/* Центровка превью изображений в обычном и excel режимах */
+.calc-col-m-image > div,
+.calc-col-image > div,
+.app-excel-grid .calc-col-m-image > div,
+.app-excel-grid .calc-col-image > div {
+	display:flex;
+	align-items:center;
+	justify-content:center;
+}
+
 /* Скрываем прежние штрихи sticky-thead чтобы не конфликтовали */
 .app-excel-grid .sticky-thead th { background:linear-gradient(#f3f6fa,#e9edf2); border-bottom:1px solid #d0d7e5; }
 
@@ -1056,10 +1066,12 @@ select.text-sm {
 #webcrumbs .calc-col-w-name { overflow:hidden; }
 #webcrumbs .calc-col-m-name input,
 #webcrumbs .calc-col-w-name input {
-	white-space: nowrap;
+	white-space: normal;
 	overflow: hidden;
-	text-overflow: ellipsis;
+	text-overflow: clip;
 	width:100%;
+	line-height:1.25;
+	min-height: 32px;
 }
 
 /* =====================
