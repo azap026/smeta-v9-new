@@ -1,14 +1,15 @@
+/* === Базовые типографические настройки документа === */
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif; /* Стек шрифтов по умолчанию */
+  line-height: 1.5;                   /* Базовый межстрочный интервал */
+  font-weight: 400;                   /* Нормальное насыщение */
+  font-synthesis: none;               /* Запрещаем синтез курсивов/полужирного */
+  text-rendering: optimizeLegibility; /* Улучшенная читаемость лигатур/кернинга */
+  -webkit-font-smoothing: antialiased;/* Сглаживание на WebKit */
+  -moz-osx-font-smoothing: grayscale; /* Сглаживание на macOS Firefox */
 }
 
-/* Растягиваем приложение на весь экран */
+/* === Растягиваем приложение на полный вьюпорт === */
 html, body, #root {
   height: 100%;
   width: 100%;
@@ -16,29 +17,24 @@ html, body, #root {
   padding: 0;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
+/* Стили ссылок (спокойная подсветка при наведении) */
+a { font-weight: 500; color: #646cff; text-decoration: inherit; }
+a:hover { color: #535bf2; }
 
+/* Основные параметры body: фон + минимальные размеры */
 body {
   margin: 0;
-  display: block; /* убираем центрирование шаблона Vite */
-  min-width: 320px;
-  min-height: 100vh;
-  background-color: #f3f4f6; /* светлый фон, как в приложении */
-  color: #1f2937; /* тёмный текст по умолчанию */
+  display: block;           /* Отменяем flex-центрирование из шаблона Vite */
+  min-width: 320px;         /* Минимальная ширина для мобильных */
+  min-height: 100vh;        /* Тянем фон на всю высоту */
+  background-color: #f3f4f6;/* Светлый фон приложения */
+  color: #1f2937;           /* Тёмный цвет текста (gray-800) */
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
+/* Крупный заголовок (редко используется после внедрения UI) */
+h1 { font-size: 3.2em; line-height: 1.1; }
 
+/* Базовые кнопки (можно переопределять utility-классами Tailwind) */
 button {
   border-radius: 8px;
   border: 1px solid transparent;
@@ -50,15 +46,10 @@ button {
   cursor: pointer;
   transition: border-color 0.25s;
 }
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
+button:hover { border-color: #646cff; }
+button:focus, button:focus-visible { outline: 4px auto -webkit-focus-ring-color; }
 
-/* Отключаем авто‑переключение цветовой схемы, используем явную светлую тему */
+/* Явная светлая тема: упрощённые стили при системной light-схеме */
 @media (prefers-color-scheme: light) {
   a:hover { color: #747bff; }
   button { background-color: #f9f9f9; }

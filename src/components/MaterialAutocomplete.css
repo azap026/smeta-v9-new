@@ -1,7 +1,8 @@
+/* Подсветка совпавшего фрагмента в списке автодополнения материалов */
 .auto-mark {
-  background: #fff59d; /* soft yellow similar to bg-yellow-200 */
-  margin: 0;
-  padding: 0.1em;
-  font-weight: inherit;
-  line-height: inherit;
+  background: #fff59d; /* Мягкий жёлтый (аналог bg-yellow-200) */
+  margin: 0;           /* Сбрасываем внешний отступ */
+  padding: 0.1em;      /* Точный внутренний отступ для подсветки */
+  font-weight: inherit;/* Наследуем насыщенность текста */
+  line-height: inherit;/* Сохраняем исходную высоту строки */
 }

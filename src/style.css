@@ -1,3 +1,10 @@
+/* ============================================================================
+	ГЛОБАЛЬНЫЕ СТИЛИ ПРИЛОЖЕНИЯ
+	- Подключение шрифтов (Open Sans, Material Symbols)
+	- Tailwind preflight / утилиты (сгенерировано)
+	- Кастомные блоки (#webcrumbs, FloatingWindow, формы, автодополнения)
+	Документируем только пользовательские секции, не каждую утилиту.
+	============================================================================ */
 /* Unified fonts: use Open Sans across the app; add display=swap for better UX */
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&display=swap');
 /* Material Symbols with variable axes and display=swap for consistency */
@@ -333,6 +340,7 @@ video {
 [hidden]:where(:not([hidden="until-found"])) {
 	display: none;
 }
+/* === Namespace #webcrumbs: скоупленные утилиты (генератор / отдельный виджет) === */
 #webcrumbs .absolute {
 	position: absolute;
 }
@@ -434,7 +442,7 @@ video {
 }
 #webcrumbs :is(.space-x-1 > :not([hidden]) ~ :not([hidden])) {
 	--tw-space-x-reverse: 0;
-	margin-left: calc(4px * (1 - var(--tw-space-x-reverse)));
+	margin-left: calc(10px * (1 - var(--tw-space-x-reverse)));
 	margin-right: calc(4px * var(--tw-space-x-reverse));
 }
 #webcrumbs :is(.space-x-2 > :not([hidden]) ~ :not([hidden])) {
@@ -472,9 +480,11 @@ video {
 	border-bottom-width: calc(1px * var(--tw-divide-y-reverse));
 	border-top-width: calc(1px * (1 - var(--tw-divide-y-reverse)));
 }
+/* Утилита "divide-gray-200": применяется ко второму и последующим дочерним элементам;
+   красит разделительные границы (межстрочные) в серый (#e5e7eb). */
 #webcrumbs :is(.divide-gray-200 > :not([hidden]) ~ :not([hidden])) {
-	--tw-divide-opacity: 1;
-	border-color: rgb(229 231 235 / var(--tw-divide-opacity, 1));
+	--tw-divide-opacity: 1; /* Полная непрозрачность цвета разделителя */
+	border-color: rgb(229 231 235 / var(--tw-divide-opacity, 1)); /* Цвет линии */
 }
 #webcrumbs .overflow-auto {
 	overflow: auto;
@@ -625,8 +635,9 @@ video {
 	line-height: 27px;
 }
 #webcrumbs .text-sm {
-	font-size: 14px;
-	line-height: 21px;
+	/* Привязка tailwind-класса text-sm к настраиваемой переменной */
+	font-size: var(--calc-cell-font, 13px);
+	line-height: 1.45;
 }
 #webcrumbs .text-xl {
 	font-size: 20px;
@@ -635,6 +646,13 @@ video {
 #webcrumbs .text-xs {
 	font-size: 12px;
 	line-height: 19.200000000000003px;
+}
+
+/* Единое управление для инпутов/текстовых областей с utility-классом text-sm */
+input.text-sm,
+textarea.text-sm,
+select.text-sm {
+	font-size: var(--calc-cell-font, 12px);
 }
 #webcrumbs .font-bold {
 	font-weight: 700;
@@ -737,8 +755,8 @@ video {
 }
 #webcrumbs {
 	font-family: 'Open Sans', system-ui, sans-serif !important;
-	/* Adaptive base size: slightly scales down on very narrow screens, caps at 16px */
-	font-size: clamp(14px, 0.9vw + 12px, 16px) !important;
+	/* Используем настраиваемую переменную. Можно заменить значение в :root (--calc-base-font) */
+	font-size: var(--calc-base-font, 15px) !important;
 }
 #webcrumbs {
 	width: 100%;
@@ -833,7 +851,7 @@ video {
 	}
 }
 
-/* Material Symbols baseline settings to ensure consistent rendering */
+/* === Material Symbols: базовое выравнивание и оптические параметры === */
 .material-symbols-outlined {
 	font-family: 'Material Symbols Outlined';
 	font-weight: normal;
@@ -856,7 +874,7 @@ video {
 		'opsz' 24;
 }
 
-/* ===== FloatingWindow standalone styles (не зависят от #webcrumbs / tailwind) ===== */
+/* ===== FloatingWindow: стили модального окна (drag + overlay) ===== */
 .fw-overlay { position:fixed; inset:0; z-index:1900; pointer-events:none; font-family:inherit; }
 .fw-overlay.has-overlay::before { content:""; position:absolute; inset:0; background:rgba(0,0,0,.45); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px); pointer-events:auto; }
 .fw-window { position:absolute; top:0; left:0; background:#fff; border:1px solid #e2e8f0; border-radius:18px; box-shadow:0 16px 40px -6px rgba(43,26,95,.25),0 4px 18px -4px rgba(43,26,95,.18); display:flex; flex-direction:column; overflow:hidden; pointer-events:auto; max-width:95vw; font-family:"Open Sans",system-ui,sans-serif; }
@@ -908,7 +926,7 @@ video {
 	background: transparent;
 	border-radius: 6px; /* сохраняем скругление для консистентности */
 	padding: 4px 6px;
-	font-size: 13px;
+	font-size: var(--calc-cell-font, 13px); /* теперь регулируется через переменную */
 	line-height: 1.3;
 	transition: background-color .12s;
 }
@@ -926,6 +944,28 @@ video {
 @keyframes spin-slow { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
 .animate-spin-slow { animation: spin-slow 1.4s linear infinite; }
 
+/* Быстрые модификаторы размера (можно навешивать на контейнер таблицы) */
+.calc-font-sm { --calc-cell-font: var(--calc-cell-font-sm, 12px); }
+.calc-font-base { --calc-cell-font: var(--calc-cell-font, 13px); }
+.calc-font-lg { --calc-cell-font: var(--calc-cell-font-lg, 14px); }
+
+/* Тонкая настройка конкретной ячейки без изменения остальных */
+.calc-cell-manual { font-size: var(--calc-cell-font, 13px); }
+
+/* === Фиксированный сайдбар приложения (не двигается при прокрутке контента) === */
+.app-sidebar-fixed { position: fixed; top:0; left:0; bottom:0; width:16rem; /* 64 * 0.25rem */ z-index: 150; background:#fff; box-shadow:0 4px 16px -4px rgba(0,0,0,.08); display:flex; flex-direction:column; }
+.app-main-with-sidebar { margin-left:16rem; }
+@media (max-width: 767px) { .app-sidebar-fixed { position:static; width:100%; box-shadow:none; } .app-main-with-sidebar { margin-left:0; } }
+
+/* Off-canvas mobile sidebar */
+@media (max-width: 767px) {
+	.app-sidebar-fixed { position: fixed; top:0; left:0; bottom:0; transform: translateX(-100%); transition: transform .28s cubic-bezier(.4,0,.2,1); width: 15.5rem; max-width: 82%; box-shadow: 0 8px 32px -6px rgba(0,0,0,.25); background:#fff; }
+	.app-sidebar-fixed.is-open { transform: translateX(0); }
+		.app-sidebar-overlay { position:fixed; inset:0; background:rgba(17,24,39,.45); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px); z-index:140; opacity:0; pointer-events:none; transition: opacity .25s; }
+	.app-sidebar-overlay.visible { opacity:1; pointer-events:auto; }
+	.app-main-with-sidebar { margin-left:0; }
+}
+
 /* ===== Autocomplete suggestions (глобально, не зависят от #webcrumbs) ===== */
 .fw-suggest-list { box-sizing:border-box; }
 .fw-suggest-item { display:block; width:100%; text-align:left; border:1px solid #c5cad1; background:#ffffff; padding:8px 12px; font-size:13px; line-height:1.35; cursor:pointer; font-family:"Open Sans", system-ui, sans-serif; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,.06); transition:background .12s, border-color .12s; }
@@ -937,7 +977,7 @@ video {
 /* ===== Material dropdown (настраиваемые переменные) ===== */
 :root {
 	/* Сетка колонок: [код] [название] [цена] [ед.] [иконка] */
-	--mat-autocomplete-grid: 150px minmax(320px,1fr) 120px 72px 40px;
+	--mat-autocomplete-grid: 1500px minmax(320px,1fr) 120px 72px 40px;
 	/* Высота строки (включая паддинги), единицы — px */
 	--mat-autocomplete-row-h: 45px;
 	/* Максимальная высота выпадающего */
@@ -952,7 +992,13 @@ video {
 	--mat-col-name-align-x: 0;
 	--mat-col-price-align-x: 1;
 	--mat-col-unit-align-x: 0;
-	--mat-col-thumb-align-x: 0
+	--mat-col-thumb-align-x: 0; /* фикс: добавлена точка с запятой */
+
+	/* === Регулируемые размеры шрифтов для калькуляции === */
+	--calc-base-font: 12px; /* базовый размер внутри #webcrumbs (можно менять вручную) */
+	--calc-cell-font: 12px; /* размер текста ячеек таблицы работ/материалов */
+	--calc-cell-font-sm: 12px; /* альтернативный меньший размер (опционально) */
+	--calc-cell-font-lg: 12px; /* альтернативный больший размер (опционально) */
 
 	--mat-col-code-pl: 0rem; /* 12px */
 	--mat-col-code-pr: 0px;
@@ -965,5 +1011,41 @@ video {
 	--mat-col-price-pr: 4rem;
 
 	/* unit/thumb выравнивание берётся из align-x переменных */
+}
+
+/* =====================
+	 Обрезка длинных названий работ и материалов (без влияния на высоту строки)
+	 ===================== */
+#webcrumbs .calc-col-m-name,
+#webcrumbs .calc-col-w-name { overflow:hidden; }
+#webcrumbs .calc-col-m-name input,
+#webcrumbs .calc-col-w-name input {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	width:100%;
+}
+
+/* =====================
+	 Адаптивность таблицы: ступенчато скрываем второстепенные колонки
+	 Пороговые значения можно корректировать (1400 / 1250 / 1150)
+	 ===================== */
+@media (max-width: 1400px) {
+	/* Изображение */
+	#webcrumbs col.col-image,
+	#webcrumbs th.calc-col-w-image,
+	#webcrumbs td.calc-col-w-image { display:none; }
+}
+@media (max-width: 1250px) {
+	/* Трудозатраты */
+	#webcrumbs col.col-labor,
+	#webcrumbs th.calc-col-m-labor,
+	#webcrumbs td.calc-col-m-labor { display:none; }
+}
+@media (max-width: 1150px) {
+	/* Суммарные материалы по работе */
+	#webcrumbs col.col-mats,
+	#webcrumbs th.calc-col-w-mats,
+	#webcrumbs td.calc-col-w-mats { display:none; }
 }
 

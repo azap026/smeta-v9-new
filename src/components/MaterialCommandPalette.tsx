@@ -105,11 +105,10 @@ export default function MaterialCommandPalette({ open, onOpenChange, onSelect, i
   };
 
   const fmtPrice = (v?: number | string | null) => {
-    if (v == null || Number.isNaN(+v)) return <span className="text-gray-400">—</span>;
-    const n = Number(v);
-    const s = n.toFixed(2);
-    const trimmed = s.endsWith('.00') ? s.slice(0, -3) : s;
-    return <span className="[font-variant-numeric:tabular-nums] [font-feature-settings:'tnum','lnum'] font-semibold">{trimmed} ₽</span>;
+    if (v == null || v === '' || Number.isNaN(Number(String(v).replace(',', '.')))) return <span className="text-gray-400">—</span>;
+    const n = Number(String(v).replace(',', '.'));
+    const s = n.toFixed(2).replace('.', ',');
+    return <span className="[font-variant-numeric:tabular-nums] [font-feature-settings:'tnum','lnum'] font-semibold">{s} ₽</span>;
   };
 
   if (!open) return null;

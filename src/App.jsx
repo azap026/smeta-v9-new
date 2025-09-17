@@ -1,22 +1,61 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
-// Конфиг ширин/высот для вкладки "Расчет сметы" — меняйте цифры здесь
-const calcColWidths = {
-  idx: 60,          // № / код работы
-  name: 500,        // Наименование работ / материалов
-  image: 100,        // Превью изображения материала
-  unit: 80,         // Единица измерения
-  qty: 90,          // Количество
-  unitPrice: 110,   // Цена за единицу
-  mats: 120,        // Сумма по материалу / столбец материалов (итог)
-  labor: 130,       // Оплата труда / сумма по работе
-  actions: 110      // Кнопки / действия
+// ----- Константы ширин / отступов (унификация вместо magic numbers) -----
+const CELL_PADDING_X = 8;            // Горизонтальный padding ячеек (px)
+const HEADER_EXTRA = 6;              // Доп. запас к измеренному тексту заголовка
+const IMAGE_CONTAINER_PADDING = 16;  // Паддинги контейнера превью (суммарно по горизонтали)
+const IMAGE_EXTRA = 8;               // Доп. запас для колонки изображения
+const INPUT_EXTRA = 16;              // Паддинг+граница вокруг input (минимальная обвязка)
+const INPUT_NUMERIC_EXTRA = 20;      // Дополнительный запас для числовых полей (выравнивание по правому краю)
+// Минимальная ширина колонки наименования
+const calcColWidths = { nameMin: 200 };
+// Фиксированные ширины самих input в ячейках (автоподгон остаётся только на уровне колонки по заголовку)
+const calcCellInputWidths = {
+  work: {
+    unit: 30,        // "м2"
+    quantity: 55,    // Кол-во работ
+    unit_price: 50  // Цена за единицу работы
+  },
+  material: {
+    unit: 30,        // Ед. изм. материала
+    effQty: 55,      // Расчётное количество (если бы был input)
+    unit_price: 50, // Цена материала
+    cpu: 40          // Норматив (CPU)
+  }
 };
-const calcRowHeights = _rowHeights.calc;
+// Держим вычисленные ширины (по заголовку) в state
+
+
+// Универсальная нормализация числового ввода с поддержкой запятой и округлением до N знаков (default=1)
+function normalizeDecimalInput(rawValue, decimals = 2) {
+  if(rawValue == null) return '';
+  const replaced = String(rawValue).replace(',', '.');
+  if(replaced.trim()==='') return '';
+  const num = parseFloat(replaced);
+  if(isNaN(num)) return rawValue; // если не число – отдаём как есть
+  const factor = 10 ** decimals;
+  const rounded = Math.round(num * factor)/factor;
+  return rounded.toFixed(decimals).replace('.', ',');
+}
+
+// Преобразование строки с запятой в число (используем вместо parseFloat напрямую)
+function toNum(v) {
+  if(v==null) return 0;
+  const s = String(v).trim();
+  if(!s) return 0;
+  const n = parseFloat(s.replace(',', '.'));
+  return isNaN(n) ? 0 : n;
+}
+
+// Форматирование числа (или строки) в вид с двумя десятичными и запятой
+function formatDec2(v) {
+  const n = toNum(v);
+  return n.toFixed(2).replace('.', ',');
+}
 // Централизованные размеры превью изображений материалов
 // Меняйте здесь — обновятся все таблицы
 const previewSizes = {
-  refMaterial:  { w: 28, h: 28, offsetX: 20,  offsetY: 0,  scale: 1 }, // Справочник материалов
-  calcMaterial: { w: 36, h: 36, offsetX: 20,  offsetY: -12,  scale: 1 }, // Таблица расчета
+  refMaterial:  { w: 28, h: 28, offsetX: 0,  offsetY: 0,   scale: 1 }, // Справочник материалов
+  calcMaterial: { w: 36, h: 36, offsetX: 0,  offsetY: 0,   scale: 1 }, // Таблица расчета (смещение убрано для стабильной сетки)
   // Пример дополнительного профиля:
   // summary: { w: 48, h: 48, offsetX: 100, offsetY: 100, scale: 1 }
 };
@@ -25,21 +64,8 @@ const previewSizes = {
 // ВНИМАНИЕ: смещение реализовано через CSS transform: translate(x,y) чтобы не ломать поток верстки и избежать влияния margin-collapse.
 function getPreviewStyle(kind = 'refMaterial') {
   const cfg = previewSizes[kind] || previewSizes.refMaterial;
-  const { w, h, offsetX = 40, offsetY = 10, scale = 1 } = cfg;
-  return {
-    width: w,
-    height: h,
-    minWidth: w,
-    minHeight: h,
-    maxWidth: w,
-    maxHeight: h,
-    display: 'block',
-  position: 'relative',
-  left: offsetX,
-  top: offsetY,
-  transform: scale !== 1 ? `scale(${scale})` : undefined,
-  transformOrigin: 'top left'
-  };
+  const { w, h } = cfg;
+  return { width: w, height: h, display: 'block', objectFit: 'cover' };
 }
 import AddWorkModal from './components/AddWorkModal.tsx';
 import { Label, Input, Button } from './components/ui/form';
@@ -49,6 +75,8 @@ import MaterialAutocomplete from './components/MaterialAutocomplete.jsx';
 import CreateProject from './components/CreateProject.jsx';
 import LoaderOverlay from './components/LoaderOverlay.tsx';
 import { rowHeights as _rowHeights, overscanDefaults } from './virtualizationConfig.js';
+// Теперь после импорта можно безопасно ссылаться на _rowHeights
+const calcRowHeights = _rowHeights.calc;
 // import { exportToCSV } from './utils/exporters.js';
 
 export default function App() {
@@ -155,6 +183,147 @@ export default function App() {
   };
   // ===== Calc template blocks (эталонные блоки) =====
   const [calcBlocks, setCalcBlocks] = useState([]); // [{id, groupName, work:{}, materials:[{}}]]
+  // Динамически измеренные ширины колонок по тексту заголовков
+  const [calcHeaderWidths, setCalcHeaderWidths] = useState(null); // { idx, name, image, unit, qty, unitPrice, cpu, mats, labor, actions }
+  const headerSpanRefs = useRef({});
+  const assignHeaderRef = (key) => (el) => { if (el) headerSpanRefs.current[key] = el; };
+  // Ручные оверрайды ширин колонок (px)
+  const [colWidthOverrides, setColWidthOverrides] = useState(() => {
+    try {
+      const raw = localStorage.getItem('calcColWidthOverrides');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('calcColWidthOverrides', JSON.stringify(colWidthOverrides||{})); } catch { /* ignore */ }
+  }, [colWidthOverrides]);
+  // Настраиваемая ширина контейнера таблицы расчёта
+  const [calcWidthMode, setCalcWidthMode] = useState(() => {
+    try { return localStorage.getItem('calcWidthMode') || 'auto'; } catch { return 'auto'; }
+  }); // 'auto' | 'fixed'
+  const [calcCustomWidth, setCalcCustomWidth] = useState(() => {
+    try { const v = parseInt(localStorage.getItem('calcCustomWidth')||'1200',10); return isNaN(v)?1200:v; } catch { return 1200; }
+  });
+  useEffect(()=>{ try { localStorage.setItem('calcWidthMode', calcWidthMode); } catch {} }, [calcWidthMode]);
+  useEffect(()=>{ if(calcWidthMode==='fixed') { try { localStorage.setItem('calcCustomWidth', String(calcCustomWidth)); } catch {} } }, [calcCustomWidth, calcWidthMode]);
+  const resizeSessionRef = useRef(null);
+  const startCalcWidthResize = useCallback((e)=>{
+    if (calcWidthMode !== 'fixed') return;
+    resizeSessionRef.current = { startX: e.clientX, startW: calcCustomWidth };
+    const move = (ev) => {
+      if (!resizeSessionRef.current) return;
+      const dx = ev.clientX - resizeSessionRef.current.startX;
+      const next = Math.min(2400, Math.max(600, resizeSessionRef.current.startW + dx));
+      setCalcCustomWidth(next);
+    };
+    const up = () => {
+      resizeSessionRef.current = null;
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    e.preventDefault();
+  }, [calcWidthMode, calcCustomWidth]);
+
+  // Измеряем ширины заголовков с повторной проверкой после загрузки шрифта и таймаута
+  useLayoutEffect(() => {
+    if (active !== 'calc') return;
+    let frame1, frame2, t1;
+    const measure = (second = false) => {
+      const map = headerSpanRefs.current;
+      if (!map || !map.idx) return;
+      const cellHorizontalPadding = CELL_PADDING_X * 2;
+      const extra = HEADER_EXTRA; // централизованный запас
+      const next = {};
+      Object.entries(map).forEach(([k, el]) => {
+        if (!el) return;
+        const w = el.getBoundingClientRect().width;
+        next[k] = Math.ceil(w + cellHorizontalPadding + extra);
+      });
+      if (next.name < calcColWidths.nameMin) next.name = calcColWidths.nameMin;
+      // Добавим защиту: если image и unit визуально пересекаются (сумма ширин < их реальных offsetLeft расстояний), компенсируем
+      try {
+        const imgSpan = map.image?.parentElement; // th
+        const unitSpan = map.unit?.parentElement;
+        if (imgSpan && unitSpan) {
+          const imgRect = imgSpan.getBoundingClientRect();
+          const unitRect = unitSpan.getBoundingClientRect();
+            if (imgRect.right > unitRect.left - 2) {
+              // Увеличиваем image на разницу
+              const delta = Math.ceil(imgRect.right - unitRect.left + 4);
+              next.image += delta;
+            }
+        }
+      } catch { /* ignore */ }
+      setCalcHeaderWidths(prev => {
+        // Если второе измерение и ширины стали больше — обновим
+        if (!prev) return next;
+        if (second) {
+          const changed = Object.keys(next).some(k => next[k] > prev[k]);
+          return changed ? next : prev;
+        }
+        return next;
+      });
+    };
+    // Первое измерение
+    frame1 = requestAnimationFrame(() => measure(false));
+    // После загрузки шрифтов / таймаут измеряем снова
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => {
+        frame2 = requestAnimationFrame(() => measure(true));
+      });
+    }
+    t1 = setTimeout(() => measure(true), 300);
+    const onResize = () => measure(true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (frame1) cancelAnimationFrame(frame1);
+      if (frame2) cancelAnimationFrame(frame2);
+      if (t1) clearTimeout(t1);
+    };
+  }, [active]);
+
+
+  // Пересчитываем финальные ширины колонок когда есть измерения заголовков или контейнера
+  // Пересчёт минимальных ширин: добавим производные прямо в calcHeaderWidths (вторая стадия) через отдельный effect
+  useEffect(() => {
+    if (active !== 'calc') return;
+    if (!calcHeaderWidths) return;
+    // Если уже есть пометка _final, не пересчитываем
+    if (calcHeaderWidths && calcHeaderWidths._final) return;
+    const previewW = previewSizes.calcMaterial?.w || 36;
+    const enriched = {
+      ...calcHeaderWidths,
+      name: Math.max(calcHeaderWidths.name, calcColWidths.nameMin),
+      image: Math.max(calcHeaderWidths.image, previewW + IMAGE_CONTAINER_PADDING + IMAGE_EXTRA),
+      unit: Math.max(calcHeaderWidths.unit, calcCellInputWidths.work.unit + INPUT_EXTRA),
+      qty: Math.max(calcHeaderWidths.qty, calcCellInputWidths.work.quantity + INPUT_EXTRA),
+      unitPrice: Math.max(calcHeaderWidths.unitPrice, calcCellInputWidths.work.unit_price + INPUT_NUMERIC_EXTRA),
+      cpu: Math.max(calcHeaderWidths.cpu, calcCellInputWidths.material.cpu + INPUT_NUMERIC_EXTRA),
+      mats: calcHeaderWidths.mats,
+      labor: calcHeaderWidths.labor,
+      actions: Math.max(calcHeaderWidths.actions, 90),
+      _final: true
+    };
+    setCalcHeaderWidths(enriched);
+  }, [calcHeaderWidths, active]);
+
+  // Итоговые ширины с учётом ручных overrides
+  const effectiveCalcWidths = useMemo(() => {
+    if (!calcHeaderWidths) return null;
+    const keys = ['idx','name','image','unit','qty','unitPrice','cpu','mats','labor','actions'];
+    const out = {};
+    for (const k of keys) {
+      const base = typeof calcHeaderWidths[k] === 'number' ? calcHeaderWidths[k] : undefined;
+      const ov = colWidthOverrides[k];
+      out[k] = (ov && ov > 20) ? ov : base; // минимальный порог 20px
+    }
+    return out;
+  }, [calcHeaderWidths, colWidthOverrides]);
   // Inline вставка материала под выбранной строкой
   const [addMatInline, setAddMatInline] = useState(null); // { blockId, afterIndex }
   // Сворачивание материалов внутри блока расчёта
@@ -229,6 +398,45 @@ export default function App() {
   const suppressNextAutosave = useRef(false);
   // Подпись последнего сохранённого состояния (чтобы не отправлять одинаковые снимки)
   const lastSavedSigRef = useRef('');
+
+  // Упрощённый ввод количества работы: без автоочистки, форматирование на blur/Enter
+  const [editingWorkQtyBlockId, setEditingWorkQtyBlockId] = useState(null);
+
+  // Авто-нормализация числовых полей (quantity, unit_price, cpu) к формату "#,##0,00" с запятой.
+  useEffect(()=>{
+    // Пока активно редактируем количество работы — не трогаем авто-нормализацию (иначе мешает стиранию)
+    if (editingWorkQtyBlockId) return;
+    setCalcBlocks(prev => {
+      let changed = false;
+      const next = prev.map(b => {
+        let wChanged = false;
+        const newWork = { ...b.work };
+        const normField = (obj, key) => {
+          const val = obj?.[key];
+          if (val == null || val === '') return false;
+          // quantity работы пропускаем если сейчас редактируем
+          if (key==='quantity' && b.id===editingWorkQtyBlockId) return false;
+          // уже отформатировано? признак: содержит запятую и ровно два знака после
+          if (/^\d+(,\d{2})?$/.test(String(val))) return false;
+          const norm = formatDec2(val);
+          if (norm !== val) { obj[key] = norm; return true; }
+          return false;
+        };
+        wChanged = ['quantity','unit_price'].some(k => normField(newWork,k));
+        let mChangedAny = false;
+        const newMaterials = (b.materials||[]).map(m => {
+          let mChanged = false;
+          const nm = { ...m };
+          ['quantity','unit_price','cpu'].forEach(f => { if(normField(nm,f)) mChanged = true; });
+          if (mChanged) { mChangedAny = true; return nm; }
+          return m;
+        });
+        if (wChanged || mChangedAny) { changed = true; return { ...b, work:newWork, materials:newMaterials }; }
+        return b;
+      });
+      return changed ? next : prev;
+    });
+  }, [calcBlocks, editingWorkQtyBlockId]);
 
   const hashString = (s) => {
     // Быстрый нех crypt хеш (djb2 xor) + длина
@@ -638,7 +846,7 @@ export default function App() {
   // Авто-ресайз текстовых областей (перенос строк) для столбца "Наименование"
   const autoGrow = (el) => {
     if (!el) return;
-    el.style.height = 'auto';
+    el.style.height = 'left';
     el.style.height = (el.scrollHeight) + 'px';
   };
 
@@ -1000,6 +1208,9 @@ export default function App() {
     setMaterialsPage(1);
   }, [materialsPageSize, active]);
   const [bulkLoading,setBulkLoading]=useState(false);
+  // Панель управления ширинами колонок
+  const [showWidthPanel, setShowWidthPanel] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false); // мобильное меню
   // Подгрузим справочник работ (только группы) при открытой вкладке calc для отображения названий разделов вместо кода
   useEffect(() => {
     if (active !== 'calc') return;
@@ -1048,10 +1259,15 @@ export default function App() {
   }
     } finally { setBulkLoading(false);} };
   return (
-    <div id="webcrumbs"> 
+    <div id="webcrumbs" className="app-root">
       <div className="min-h-screen bg-gray-50 font-sans flex">
-        {/* Sidebar */}
-        <aside className="w-64 bg-white shadow-md hidden md:block">
+        {/* Overlay for mobile sidebar */}
+        <div
+          className={"app-sidebar-overlay "+(mobileSidebarOpen? 'visible':'')}
+          onClick={()=> setMobileSidebarOpen(false)}
+        />
+        {/* Sidebar (фиксирован / off-canvas) */}
+        <aside className={"app-sidebar-fixed "+(mobileSidebarOpen? 'is-open':'')}>        
           <div className="p-4 border-b border-gray-200">
             <div className="flex items-center space-x-2">
               <span className="material-symbols-outlined text-primary-600 text-2xl">construction</span>
@@ -1156,14 +1372,14 @@ export default function App() {
             </a>
           </div>
         </aside>
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col">
+  {/* Main Content (с отступом слева под фиксированный сайдбар) */}
+  <div className="flex-1 flex flex-col app-main-with-sidebar">
           {/* Header */}
           <header className="bg-white shadow-sm z-20 sticky top-0">
             <div className="flex justify-between items-center px-4 py-3">
               <div className="flex items-center">
-                <button className="md:hidden mr-2">
-                  <span className="material-symbols-outlined text-2xl">menu</span>
+                <button className="md:hidden mr-2" onClick={()=> setMobileSidebarOpen(o=> !o)} aria-label="Меню">
+                  <span className="material-symbols-outlined text-2xl">{mobileSidebarOpen? 'close' : 'menu'}</span>
                 </button>
                 <h1 className="text-xl font-semibold text-gray-800">{
                   active === "calc" ? "Расчет сметы" : active === "works" ? "Справочник работ" : active === 'project' ? 'Создать проект' : "Справочник материалов"
@@ -1208,10 +1424,13 @@ export default function App() {
               </div>
             </div>
             <div className="flex-1 min-h-0">
-              <div className="bg-white rounded-xl shadow-sm overflow-hidden h-full flex flex-col mb-6">
+              <div
+                className="bg-white rounded-xl shadow-sm overflow-hidden h-full flex flex-col mb-6 relative"
+                style={calcWidthMode==='fixed' ? { width: calcCustomWidth, maxWidth:'100%' } : { width:'100%' }}
+              >
                 <div className="p-4 border-b border-gray-200 flex justify-between items-center sticky top-0 z-10 bg-white">
                 <h2 className="font-semibold text-lg">Работы и материалы</h2>
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center flex-wrap">
                   <button onClick={openAddBlockModal} className="bg-primary-50 text-primary-600 hover:bg-primary-100 px-3 py-1 rounded-lg flex items-center space-x-1 transition-colors">
                     <span className="material-symbols-outlined text-sm">add</span>
                     <span>Добавить</span>
@@ -1308,37 +1527,120 @@ export default function App() {
                       <span className="flex items-center gap-1 opacity-70"><span className="material-symbols-outlined text-base">info</span> Нет изменений</span>
                     )}
                   </div>
+                  <div className="flex items-center gap-2 pl-2 ml-2 border-l border-gray-200">
+                    <button
+                      type="button"
+                      onClick={()=> setCalcWidthMode(m=> m==='auto' ? 'fixed' : 'auto')}
+                      className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-2 py-1 rounded text-xs flex items-center gap-1"
+                      title="Переключить режим ширины таблицы"
+                    >
+                      <span className="material-symbols-outlined text-base">width</span>
+                      <span>{calcWidthMode==='auto'? 'Авто' : 'Фикс'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={()=> setShowWidthPanel(p=> !p)}
+                      className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-2 py-1 rounded text-xs flex items-center gap-1"
+                      title="Ручная настройка ширин колонок"
+                    >
+                      <span className="material-symbols-outlined text-base">tune</span>
+                      <span>Ширины</span>
+                    </button>
+                    {calcWidthMode==='fixed' && (
+                      <div className="flex items-center gap-1 text-xs">
+                        <input
+                          type="number"
+                          value={calcCustomWidth}
+                          onChange={(e)=> { const v = parseInt(e.target.value,10); if(!isNaN(v)) setCalcCustomWidth(Math.min(2400, Math.max(600, v))); }}
+                          className="w-20 bg-white border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                          title="Ширина контейнера, px"
+                        />
+                        <span>px</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 </div>
+                {showWidthPanel && (
+                  <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 text-xs flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="font-semibold text-gray-600">Ширины колонок (px)</span>
+                      <div className="flex gap-2 items-center">
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100"
+                          onClick={()=> setColWidthOverrides({})}
+                          title="Сбросить все ручные ширины"
+                        >Сброс</button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100"
+                          onClick={()=> setShowWidthPanel(false)}
+                        >Закрыть</button>
+                      </div>
+                    </div>
+                    <div className="grid md:grid-cols-5 sm:grid-cols-3 grid-cols-2 gap-3">
+                      {['idx','name','image','unit','qty','unitPrice','cpu','mats','labor','actions'].map(key => {
+                        const labels = { idx:'№', name:'Наименование', image:'Изобр.', unit:'Ед.', qty:'Кол-во', unitPrice:'Цена ед.', cpu:'CPU', mats:'Мат-лы', labor:'Труд', actions:'Действия' };
+                        const val = colWidthOverrides[key] ?? (calcHeaderWidths?.[key] || 0);
+                        return (
+                          <label key={key} className="flex flex-col gap-1">
+                            <span className="text-[11px] text-gray-600 flex justify-between"><span>{labels[key]}</span><span>{val || '—'}</span></span>
+                            <input
+                              type="range"
+                              min={Math.max(20, Math.min( (calcHeaderWidths?.[key]||20) - 40, 20 ))}
+                              max={Math.max( (calcHeaderWidths?.[key]||200) + 600, 200 )}
+                              value={val || (calcHeaderWidths?.[key]||0)}
+                              onChange={(e)=> {
+                                const v = parseInt(e.target.value,10);
+                                setColWidthOverrides(prev => ({...prev, [key]: v}));
+                              }}
+                              className="w-full"
+                            />
+                            <input
+                              type="number"
+                              className="w-full border border-gray-300 rounded px-1 py-0.5 text-[11px] bg-white focus:outline-none focus:ring-1 focus:ring-primary-500"
+                              value={val || ''}
+                              placeholder={(calcHeaderWidths?.[key]||'')+''}
+                              onChange={(e)=> {
+                                const raw = e.target.value.trim();
+                                if (!raw) { setColWidthOverrides(prev => { const n={...prev}; delete n[key]; return n; }); return; }
+                                const v = parseInt(raw,10); if(isNaN(v)) return;
+                                setColWidthOverrides(prev => ({...prev, [key]: v}));
+                              }}
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="flex-1 min-h-0 overflow-auto" style={calcMaxHeight ? { maxHeight: calcMaxHeight } : undefined}>
-                  <div className="overflow-x-auto overflow-y-visible">
-  <table className="w-full" style={{ tableLayout: 'fixed' }}>
+                  <div className="overflow-x-auto overflow-y-visible h-full">
+  <table className="w-full" style={{ tableLayout: 'fixed', minWidth: (effectiveCalcWidths ? Object.values(effectiveCalcWidths).reduce((a,b)=> a + (typeof b==='number'? b:0),0) : (calcColWidths.nameMin + 520)) }}>
                   <colgroup>
-          {/* Ширины столбцов берутся из calcColWidths (см. верх файла). Меняйте там числа — обновится таблица. */}
-                    <col style={{ width: calcColWidths.idx }} />
-                    <col style={{ width: calcColWidths.name }} />
-                    <col style={{ width: calcColWidths.image }} />
-                    <col style={{ width: calcColWidths.unit }} />
-                    <col style={{ width: calcColWidths.qty }} />
-                    <col style={{ width: calcColWidths.unitPrice }} />
-                    {/* Норматив расхода (из справочника материала) */}
-                    <col style={{ width: 120 }} />
-                    <col style={{ width: calcColWidths.mats }} />
-                    <col style={{ width: calcColWidths.labor }} />
-                    <col style={{ width: calcColWidths.actions }} />
+                    {/* Используем финальные (обогащённые) calcHeaderWidths */}
+                    <col className="col-idx" style={effectiveCalcWidths? { width: effectiveCalcWidths.idx } : undefined} />
+                    <col className="col-name" style={effectiveCalcWidths? { width: effectiveCalcWidths.name } : { minWidth: calcColWidths.nameMin }} />
+                    <col className="col-image" style={effectiveCalcWidths? { width: effectiveCalcWidths.image } : undefined} />
+                    <col className="col-unit" style={effectiveCalcWidths? { width: effectiveCalcWidths.unit } : undefined} />
+                    <col className="col-qty" style={effectiveCalcWidths? { width: effectiveCalcWidths.qty } : undefined} />
+                    <col className="col-unitprice" style={effectiveCalcWidths? { width: effectiveCalcWidths.unitPrice } : undefined} />
+                    <col className="col-cpu" style={effectiveCalcWidths? { width: effectiveCalcWidths.cpu } : undefined} />
+                    <col className="col-mats" style={effectiveCalcWidths? { width: effectiveCalcWidths.mats } : undefined} />
+                    <col className="col-labor" style={effectiveCalcWidths? { width: effectiveCalcWidths.labor } : undefined} />
+                    <col className="col-actions" style={effectiveCalcWidths? { width: effectiveCalcWidths.actions } : undefined} />
                   </colgroup>
                   <thead ref={calcTheadRef} className="bg-gray-50 text-left sticky-thead">
                     <tr>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">№</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Наименование работ</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Изображение</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Ед. изм.</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Кол-во</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">На единицу</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Норматив (CPU)</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Материалы</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Оплата труда</th>
-                      <th role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">Действия</th>
+                      {['idx','name','image','unit','qty','unitPrice','cpu','mats','labor','actions'].map(key => {
+                        const labels = { idx:'№', name:'Наименование работ', image:'Изображение', unit:'Ед. изм.', qty:'Кол-во', unitPrice:'На единицу', cpu:'Норматив (CPU)', mats:'Материалы', labor:'Оплата труда', actions:'Действия' };
+                        return (
+                          <th key={key} role="columnheader" className="py-2 px-2 font-medium text-gray-500 text-sm">
+                            <span ref={assignHeaderRef(key)} style={{display:'inline-block',maxWidth:'100%',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{labels[key]}</span>
+                          </th>
+                        );
+                      })}
                     </tr>
                   </thead>
                   <VirtualizedTBody
@@ -1387,15 +1689,15 @@ export default function App() {
                       }
                       if (row.kind === 'block') {
                         const wb = row.block;
-                        const workQty = (parseFloat(wb.work.quantity)||0);
-                        const workSum = workQty * (parseFloat(wb.work.unit_price)||0);
+                        const workQty = toNum(wb.work.quantity);
+                        const workSum = workQty * toNum(wb.work.unit_price);
                         const matsTotal = (wb.materials||[]).reduce((s,m)=> {
                           // Кол-во материала = Норматив (CPU) × Кол-во работ
-                          const cpu = (m?.cpu != null ? parseFloat(m.cpu) : parseFloat(m.quantity)) || 0;
+                          const cpu = (m?.cpu != null ? toNum(m.cpu) : toNum(m.quantity));
                           const effQty = workQty * cpu;
                           const roundedQty = Math.ceil(effQty);
                           // Суммы считаем по округленному количеству
-                          return s + (roundedQty * ((parseFloat(m.unit_price)||0)));
+                          return s + (roundedQty * toNum(m.unit_price));
                         },0);
                         const onUpd = (fn) => updateBlock(wb.id, fn);
                         const onRemove = async () => {
@@ -1425,6 +1727,7 @@ export default function App() {
                           <React.Fragment key={row.key}>
                             <tr role="row" aria-rowindex={ariaRowIndex}>
                               <td role="cell" className="px-2 py-2 text-gray-800 whitespace-nowrap">
+                                <div className="calc-col calc-col-code flex items-start gap-1">
                                 <button
                                   type="button"
                                   onClick={()=> toggleBlockMaterials(wb.id)}
@@ -1435,9 +1738,11 @@ export default function App() {
                                     {collapsedCalc[wb.id] ? 'chevron_right' : 'expand_more'}
                                   </span>
                                 </button>
-                                {wb.work.code}
+                                  <span className="code-text">{wb.work.code}</span>
+                                </div>
                               </td>
                               <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
+                                <div className="calc-col calc-col-workname">
                                 <textarea
                                   rows={1}
                                   value={wb.work.name}
@@ -1448,30 +1753,73 @@ export default function App() {
                                   className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm resize-none"
                                   style={{ whiteSpace: 'normal', wordBreak: 'break-word', overflowY: 'hidden', resize: 'none' }}
                                 />
+                                </div>
                               </td>
-                              <td role="cell" className="px-2 py-2"></td>
+                              <td role="cell" className="px-2 py-2"><div className="calc-col calc-col-image"/></td>
                               <td role="cell" className="px-2 py-2 text-gray-800">
-                                <input value={wb.work.unit} placeholder="ед" onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit:e.target.value}}))} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                <div className="calc-col calc-col-unit">
+                                  <input
+                                    value={wb.work.unit}
+                                    placeholder="ед"
+                                    onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit:e.target.value}}))}
+                                    style={{ width: calcCellInputWidths.work.unit }}
+                                    className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                  />
+                                </div>
                               </td>
                               <td role="cell" className="px-2 py-2 text-gray-800">
-                                <input value={wb.work.quantity} placeholder="0" onChange={(e)=> onUpd(o=>({...o, work:{...o.work, quantity:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                <div className="calc-col calc-col-workqty">
+                                  <input
+                                    value={wb.work.quantity||''}
+                                    placeholder="0,00"
+                                    onFocus={()=> setEditingWorkQtyBlockId(wb.id)}
+                                    onChange={(e)=> {
+                                      const raw = e.target.value;
+                                      const cleaned = raw.replace(/[^0-9,\.]/g,'').replace('.',',');
+                                      onUpd(o=>({...o, work:{...o.work, quantity: cleaned}}));
+                                    }}
+                                    onBlur={(e)=>{
+                                      const norm = normalizeDecimalInput(e.target.value,2);
+                                      onUpd(o=>({...o, work:{...o.work, quantity: norm}}));
+                                      setEditingWorkQtyBlockId(id=> id===wb.id? null : id);
+                                    }}
+                                    onKeyDown={(e)=>{
+                                      if(e.key==='Enter') { e.preventDefault(); e.currentTarget.blur(); }
+                                      else if(e.key==='Escape') { e.preventDefault(); setEditingWorkQtyBlockId(null); e.currentTarget.blur(); }
+                                    }}
+                                    style={{ width: calcCellInputWidths.work.quantity, textAlign:'right' }}
+                                    className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                  />
+                                </div>
                               </td>
                               <td role="cell" className="px-2 py-2 text-gray-800">
-                                <input value={wb.work.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit_price:e.target.value}}))} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                <div className="calc-col calc-col-workprice">
+                                  <input
+                                    value={wb.work.unit_price}
+                                    placeholder="0"
+                                    onChange={(e)=> onUpd(o=>({...o, work:{...o.work, unit_price: normalizeDecimalInput(e.target.value,1)}}))}
+                                    style={{ width: calcCellInputWidths.work.unit_price, textAlign:'right' }}
+                                    className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                  />
+                                </div>
                               </td>
                               <td role="cell" className="px-2 py-2 text-gray-800">
-                                {collapsedCalc[wb.id] ? (matsTotal? matsTotal.toFixed(2): '—') : '—'}
+                                <div className="calc-col calc-col-mats-sum">
+                                  {collapsedCalc[wb.id] ? (matsTotal? formatDec2(matsTotal): '—') : '—'}
+                                </div>
                               </td>
-                              <td role="cell" className="px-2 py-2 font-semibold text-right text-gray-800">{workSum ? workSum.toFixed(2) : '—'}</td>
+                              <td role="cell" className="px-2 py-2 font-semibold text-right text-gray-800">
+                                <div className="calc-col calc-col-work-sum">{workSum ? formatDec2(workSum) : '—'}</div>
+                              </td>
                               <td role="cell" className="px-2 py-2">
-                                <button onClick={()=> onUpd(o=>({...o, materials:[...o.materials, { name:'', unit:'', quantity:'', unit_price:'', total:'' }]}))} className="bg-primary-50 text-primary-600 px-2 py-1 rounded text-xs mr-2">+ Материал</button>
+                                <div className="calc-col calc-col-actions" />
                               </td>
                             </tr>
                             {!collapsedCalc[wb.id] && (wb.materials||[]).map((m, mi) => {
-                              const cpuVal = (m?.cpu != null ? parseFloat(m.cpu) : parseFloat(m.quantity)) || 0;
-                              const effQty = (parseFloat(wb.work.quantity)||0) * cpuVal; // Кол-во = CPU × Кол-во работ
-                              const roundedQty = Math.ceil(effQty);
-                              const matSum = roundedQty * ((parseFloat(m.unit_price)||0));
+                              const cpuVal = (m?.cpu != null ? toNum(m.cpu) : toNum(m.quantity));
+                              const effQty = toNum(wb.work.quantity) * cpuVal; // Кол-во = CPU × Кол-во работ
+                              const roundedQty = Math.round(effQty * 100)/100; // округляем до сотых
+                              const matSum = roundedQty * toNum(m.unit_price);
                               // ref to control palette open (use createRef to avoid hooks-in-loop)
                               const matAutoRef = React.createRef();
                               const isInsertAfter = addMatInline && addMatInline.blockId===wb.id && addMatInline.afterIndex===mi;
@@ -1479,6 +1827,7 @@ export default function App() {
                                 <React.Fragment key={row.key+':mfrag:'+mi}>
                                 <tr role="row" aria-rowindex={ariaRowIndex+1+mi}>
                                   <td role="cell" className="px-2 py-2 text-gray-800 whitespace-nowrap">
+                                    <div className="calc-col calc-col-m-actions flex items-center gap-1">
                                     <button
                                       type="button"
                                       className="text-primary-600 hover:text-primary-700 inline-flex items-center gap-1"
@@ -1495,8 +1844,10 @@ export default function App() {
                                     >
                                       <span className="material-symbols-outlined text-base align-middle">add</span>
                                     </button>
+                                    </div>
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
+                                    <div className="calc-col calc-col-m-name">
                                     <MaterialAutocomplete
                                       ref={matAutoRef}
                                       value={{ id: m.code, name: m.name }}
@@ -1585,27 +1936,49 @@ export default function App() {
                                         }
                                       }}
                                     />
+                                    </div>
                                   </td>
                                   <td role="cell" className="px-2 py-2">
-                                    {m.image_url ? (
-                                      <img src={m.image_url} alt="img" className="rounded border object-cover" style={getPreviewStyle('calcMaterial')} onError={(e)=>{e.currentTarget.style.display='none';}} />
-                                    ) : null}
+                                    <div className="calc-col calc-col-m-image">
+                                      {m.image_url ? (
+                                        <div style={{ width: (previewSizes.calcMaterial?.w||36), height:(previewSizes.calcMaterial?.h||36), minWidth:(previewSizes.calcMaterial?.w||36), minHeight:(previewSizes.calcMaterial?.h||36), overflow:'hidden', borderRadius:4, border:'1px solid #e2e8f0', background:'#fafafa', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                                          <img src={m.image_url} alt="img" style={getPreviewStyle('calcMaterial')} onError={(e)=>{e.currentTarget.style.display='none';}} />
+                                        </div>
+                                      ) : null}
+                                    </div>
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800">
-                                    <input value={m.unit} placeholder="ед" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit:e.target.value}; return {...o, materials:ms}; })} className="w-full bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                    <div className="calc-col calc-col-m-unit">
+                                    <input
+                                      value={m.unit}
+                                      placeholder="ед"
+                                      onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit:e.target.value}; return {...o, materials:ms}; })}
+                                      style={{ width: calcCellInputWidths.material.unit }}
+                                      className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                    />
+                                    </div>
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800 text-right">
-                                    {roundedQty ? String(roundedQty) : '—'}
+                                    <div className="calc-col calc-col-m-effqty">{roundedQty ? formatDec2(roundedQty) : '—'}</div>
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800">
-                                    <input value={m.unit_price} placeholder="0" onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price:e.target.value}; return {...o, materials:ms}; })} className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm" />
+                                    <div className="calc-col calc-col-m-unitprice">
+                                    <input
+                                      value={m.unit_price}
+                                      placeholder="0"
+                                      onChange={(e)=> onUpd(o=>{ const ms=[...o.materials]; ms[mi]={...ms[mi], unit_price: normalizeDecimalInput(e.target.value,1)}; return {...o, materials:ms}; })}
+                                      style={{ width: calcCellInputWidths.material.unit_price, textAlign:'right' }}
+                                      className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                    />
+                                    </div>
                                   </td>
                                   {/* Норматив (CPU) — редактируемый, сохраняется как consumption_per_work_unit */}
                                   <td role="cell" className="px-2 py-2 text-gray-800">
+                                    <div className="calc-col calc-col-m-cpu">
                                     <input
                                       value={m.quantity}
                                       placeholder="0"
-                                      onChange={(e)=> onUpd(o=>{ const v=e.target.value; const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:v, cpu: (v===''? null : Number(String(v).replace(/\s+/g,'').replace(/,/g,'.'))) }; return {...o, materials:ms}; })}
+                                      onChange={(e)=> onUpd(o=>{ const v = normalizeDecimalInput(e.target.value,1); const ms=[...o.materials]; ms[mi]={...ms[mi], quantity:v, cpu: (v===''? null : Number(v.replace(',','.'))) }; return {...o, materials:ms}; })}
                                       onBlur={async (e)=>{
                                         try {
                                           const workId = wb?.work?.code;
@@ -1620,12 +1993,15 @@ export default function App() {
                                           });
                                         } catch { /* ignore upsert error */ }
                                       }}
-                                      className="w-full text-right bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
+                                      style={{ width: calcCellInputWidths.material.cpu, textAlign:'right' }}
+                                      className="bg-transparent focus:outline-none border-b border-dashed border-gray-300 focus:border-primary-400 text-sm"
                                     />
+                                    </div>
                                   </td>
-                                  <td role="cell" className="px-2 py-2 text-gray-800">{matSum? matSum.toFixed(2): '—'}</td>
-                                  <td role="cell" className="px-2 py-2 text-gray-800">—</td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-m-sum">{matSum? formatDec2(matSum): '—'}</div></td>
+                                  <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-m-labor">—</div></td>
                                   <td role="cell" className="px-2 py-2 text-right">
+                                    <div className="calc-col calc-col-m-row-actions">
                                     {wb.materials.length>1 && (
                                       <button
                                         onClick={async ()=>{
@@ -1662,24 +2038,27 @@ export default function App() {
                                         <span className="material-symbols-outlined text-base align-middle">delete</span>
                                       </button>
                                     )}
+                                    </div>
                                   </td>
                                 </tr>
                                 {isInsertAfter && (
                                   <tr className="bg-green-50" role="row">
-                                    <td role="cell" className="px-2 py-2"></td>
+                                    <td role="cell" className="px-2 py-2"><div className="calc-col calc-col-insert-spacer"/></td>
                                     <td role="cell" colSpan={2} className="px-2 py-2">
-                                      <MaterialAutocomplete
-                                        value={null}
-                                        onSelect={(mat)=> handleSelectNewMaterial(wb.id, mi, mat)}
-                                      />
+                                      <div className="calc-col calc-col-insert-autocomplete">
+                                        <MaterialAutocomplete
+                                          value={null}
+                                          onSelect={(mat)=> handleSelectNewMaterial(wb.id, mi, mat)}
+                                        />
+                                      </div>
                                     </td>
                                     <td role="cell" className="px-2 py-2" colSpan={5}>
-                                      <div className="flex items-center gap-2 text-xs text-gray-600">
+                                      <div className="calc-col calc-col-insert-hint flex items-center gap-2 text-xs text-gray-600">
                                         <span>Выберите материал для вставки</span>
                                         <button onClick={cancelAddMaterialInline} className="text-gray-500 hover:text-gray-700" type="button">Отмена</button>
                                       </div>
                                     </td>
-                                    <td role="cell" className="px-2 py-2" colSpan={2}></td>
+                                    <td role="cell" className="px-2 py-2" colSpan={2}><div className="calc-col calc-col-insert-tail"/></td>
                                   </tr>
                                 )}
                                 </React.Fragment>
@@ -1687,13 +2066,15 @@ export default function App() {
                             })}
                             {!collapsedCalc[wb.id] && (
                               <tr className="bg-gray-50 font-semibold" role="row" aria-rowindex={ariaRowIndex + 1 + (wb.materials?.length || 0)} style={{ height: calcRowHeights.total }}>
-                                <td role="cell" className="px-2 py-2 text-gray-800" colSpan={7}>ИТОГО ПО ГРУППЕ:</td>
-                                <td role="cell" className="px-2 py-2 text-gray-800">{matsTotal? matsTotal.toFixed(2): '—'}</td>
-                                <td role="cell" className="px-2 py-2 text-primary-700">{workSum? workSum.toFixed(2): '—'}</td>
+                                <td role="cell" className="px-2 py-2 text-gray-800" colSpan={7}><div className="calc-col calc-col-total-label">ИТОГО ПО ГРУППЕ:</div></td>
+                                <td role="cell" className="px-2 py-2 text-gray-800"><div className="calc-col calc-col-total-mats">{matsTotal? formatDec2(matsTotal): '—'}</div></td>
+                                <td role="cell" className="px-2 py-2 text-primary-700"><div className="calc-col calc-col-total-work">{workSum? formatDec2(workSum): '—'}</div></td>
                                 <td role="cell" className="px-2 py-2 text-right">
-                                  <button onClick={onRemove} className="text-red-600 hover:text-red-700 p-1" title="Удалить блок" aria-label="Удалить блок">
-                                    <span className="material-symbols-outlined text-base align-middle">delete</span>
-                                  </button>
+                                  <div className="calc-col calc-col-total-actions">
+                                    <button onClick={onRemove} className="text-red-600 hover:text-red-700 p-1" title="Удалить блок" aria-label="Удалить блок">
+                                      <span className="material-symbols-outlined text-base align-middle">delete</span>
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             )}
@@ -1705,6 +2086,13 @@ export default function App() {
                   />
                 </table>
                   </div>
+                  {calcWidthMode==='fixed' && (
+                    <div
+                      onMouseDown={startCalcWidthResize}
+                      title="Потяните чтобы изменить ширину блока"
+                      style={{ position:'absolute', top:0, right:0, width:6, cursor:'col-resize', height:'100%', zIndex:30, background:'transparent' }}
+                    />
+                  )}
                 </div>
               </div>
             </div>
