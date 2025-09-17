@@ -322,6 +322,13 @@ export default function App() {
       const ov = colWidthOverrides[k];
       out[k] = (ov && ov > 20) ? ov : base; // минимальный порог 20px
     }
+    // Подсчёт суммарной ширины (если все есть) для фиксации таблицы и предотвращения перераспределения
+    let total = 0; let complete = true;
+    for (const k of keys) {
+      const v = out[k];
+      if (typeof v === 'number' && v > 0) total += v; else { complete = false; break; }
+    }
+    if (complete) out.__total = total;
     return out;
   }, [calcHeaderWidths, colWidthOverrides]);
   // Inline вставка материала под выбранной строкой
@@ -1631,7 +1638,14 @@ export default function App() {
                 )}
                 <div className={"flex-1 min-h-0 overflow-auto "+(excelGrid? 'app-excel-grid':'')} style={calcMaxHeight ? { maxHeight: calcMaxHeight } : undefined}>
                   <div className="overflow-x-auto overflow-y-visible h-full">
-  <table className="w-full" style={{ tableLayout: 'fixed', minWidth: (effectiveCalcWidths ? Object.values(effectiveCalcWidths).reduce((a,b)=> a + (typeof b==='number'? b:0),0) : (calcColWidths.nameMin + 520)) }}>
+  <table
+    className={"calc-table "+(effectiveCalcWidths?.__total? 'is-frozen-width':'')}
+    style={{
+      tableLayout: 'fixed',
+      minWidth: (effectiveCalcWidths?.__total || (calcColWidths.nameMin + 520)),
+      width: effectiveCalcWidths?.__total || undefined
+    }}
+  >
                   <colgroup>
                     {/* Используем финальные (обогащённые) calcHeaderWidths */}
                     <col className="col-idx" style={effectiveCalcWidths? { width: effectiveCalcWidths.idx } : undefined} />
