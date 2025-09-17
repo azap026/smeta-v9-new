@@ -155,6 +155,44 @@ export default function App() {
   };
   // ===== Calc template blocks (эталонные блоки) =====
   const [calcBlocks, setCalcBlocks] = useState([]); // [{id, groupName, work:{}, materials:[{}}]]
+  // Inline вставка материала под выбранной строкой
+  const [addMatInline, setAddMatInline] = useState(null); // { blockId, afterIndex }
+  const startAddMaterialBelow = (blockId, afterIndex) => setAddMatInline({ blockId, afterIndex });
+  const cancelAddMaterialInline = () => setAddMatInline(null);
+  const handleSelectNewMaterial = async (blockId, afterIndex, mat) => {
+    if (!mat) return;
+    let workIdForFetch = null;
+    setCalcBlocks(prev => prev.map(b => {
+      if (b.id !== blockId) return b;
+      workIdForFetch = b?.work?.code || null;
+      const ms = [...(b.materials || [])];
+      const insertIdx = afterIndex + 1;
+      ms.splice(insertIdx, 0, {
+        code: mat.id,
+        name: mat.name,
+        unit: mat.unit || '',
+        unit_price: mat.unit_price != null ? String(mat.unit_price) : '',
+        quantity: '',
+        cpu: null,
+        image_url: mat.image || '',
+        sku: mat.sku || mat.id
+      });
+      return { ...b, materials: ms };
+    }));
+    setAddMatInline(null);
+    // Создаём нормативную связь (если есть workId) с пустым расходом (cpu=null)
+    try {
+      if (workIdForFetch && mat.id) {
+        await fetch('/api/work-materials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ work_id: workIdForFetch, material_id: mat.id, consumption_per_work_unit: null, waste_coeff: 1 })
+        });
+      }
+    } catch (e) {
+      console.warn('Не удалось создать связь работа-материал при вставке:', e);
+    }
+  };
   const CALC_PAGE_BLOCKS = 30;
   const [calcVisibleBlocks, setCalcVisibleBlocks] = useState(CALC_PAGE_BLOCKS);
   // Ограничение высоты для таблицы расчёта сметы (как для работ/материалов)
@@ -1401,8 +1439,10 @@ export default function App() {
                               const matSum = roundedQty * ((parseFloat(m.unit_price)||0));
                               // ref to control palette open (use createRef to avoid hooks-in-loop)
                               const matAutoRef = React.createRef();
+                              const isInsertAfter = addMatInline && addMatInline.blockId===wb.id && addMatInline.afterIndex===mi;
                               return (
-                                <tr key={row.key+':m:'+mi} role="row" aria-rowindex={ariaRowIndex+1+mi}>
+                                <React.Fragment key={row.key+':mfrag:'+mi}>
+                                <tr role="row" aria-rowindex={ariaRowIndex+1+mi}>
                                   <td role="cell" className="px-2 py-2 text-gray-800 whitespace-nowrap">
                                     <button
                                       type="button"
@@ -1411,6 +1451,14 @@ export default function App() {
                                       onClick={()=> matAutoRef.current?.openPalette('')}
                                     >
                                       <span className="material-symbols-outlined text-base align-middle">swap_horiz</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-primary-600 hover:text-primary-700 inline-flex items-center gap-1 ml-1"
+                                      title="Добавить материал ниже"
+                                      onClick={()=> startAddMaterialBelow(wb.id, mi)}
+                                    >
+                                      <span className="material-symbols-outlined text-base align-middle">add</span>
                                     </button>
                                   </td>
                                   <td role="cell" className="px-2 py-2 text-gray-800" style={{ verticalAlign: 'top' }}>
@@ -1581,6 +1629,25 @@ export default function App() {
                                     )}
                                   </td>
                                 </tr>
+                                {isInsertAfter && (
+                                  <tr className="bg-green-50" role="row">
+                                    <td role="cell" className="px-2 py-2"></td>
+                                    <td role="cell" colSpan={2} className="px-2 py-2">
+                                      <MaterialAutocomplete
+                                        value={null}
+                                        onSelect={(mat)=> handleSelectNewMaterial(wb.id, mi, mat)}
+                                      />
+                                    </td>
+                                    <td role="cell" className="px-2 py-2" colSpan={5}>
+                                      <div className="flex items-center gap-2 text-xs text-gray-600">
+                                        <span>Выберите материал для вставки</span>
+                                        <button onClick={cancelAddMaterialInline} className="text-gray-500 hover:text-gray-700" type="button">Отмена</button>
+                                      </div>
+                                    </td>
+                                    <td role="cell" className="px-2 py-2" colSpan={2}></td>
+                                  </tr>
+                                )}
+                                </React.Fragment>
                               );
                             })}
                             <tr className="bg-gray-50 font-semibold" role="row" aria-rowindex={ariaRowIndex + 1 + (wb.materials?.length || 0)} style={{ height: calcRowHeights.total }}>
